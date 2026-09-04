@@ -48,7 +48,7 @@ func scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter
         }
         if err := emitter.EmitDomains(rediver.DNSResult{
             Target: target,
-            Records: []rediver.DNSRecord{{Domain: target.Domain, IPs: ips}},
+            Items: []rediver.DNSRecord{{Domain: target.Domain, IPs: ips}},
         }); err != nil {
             return err
         }
@@ -140,16 +140,43 @@ set pairs one assigned target with a slice of native observations:
 
 | Method | Result set |
 |---|---|
-| `EmitDomains` | `DNSResult{Target: target, Records: []DNSRecord{...}}` |
-| `EmitServices` | `ServiceResult{Target: target, Services: []Service{...}}` |
-| `EmitFindings` | `FindingResult{Target: target, Findings: []Finding{...}}` |
+| `EmitDomains` | `DNSResult{Target: target, Items: []DNSRecord{...}}` |
+| `EmitServices` | `ServiceResult{Target: target, Items: []Service{...}}` |
+| `EmitFindings` | `FindingResult{Target: target, Items: []Finding{...}}` |
+
+These names are aliases of the shared `Result[T]` type:
+
+```go
+type Result[T any] struct {
+    Target       Target
+    ErrorMessage *string
+    Items        []T
+}
+
+type DNSResult = Result[DNSRecord]
+type ServiceResult = Result[Service]
+type FindingResult = Result[Finding]
+```
+
+Use either spelling, including slices such as `[]Result[Finding]` passed to
+`EmitFindings(results...)`. All result types store observations in `Items`.
+
+All three result types also have an optional `ErrorMessage *string` for a scan
+error on that target, including when partial observations are available. Leave
+it `nil` when absent, or set it with `rediver.Ptr("scan timed out")`.
+`rediver.Ptr("")` represents an explicitly present empty message.
+
+This field is reserved for upcoming protocol support: the current SDK transport
+does not upload it or use it to change job status. A result containing only
+`ErrorMessage` remains a no-op after target validation. Return an error from
+`Scan` when the whole job should fail.
 
 Emit one result set as soon as its observations are available:
 
 ```go
 oneResult := rediver.FindingResult{
     Target: target,
-    Findings: []rediver.Finding{{
+    Items: []rediver.Finding{{
         Name: "Observed vulnerability",
         Severity: rediver.SeverityHigh,
         RuleID: "my-rule",
@@ -165,13 +192,13 @@ with findings already collected for two targets:
 
 ```go
 results := []rediver.FindingResult{
-    {Target: targets[0], Findings: firstTargetFindings},
-    {Target: targets[1], Findings: secondTargetFindings},
+    {Target: targets[0], Items: firstTargetFindings},
+    {Target: targets[1], Items: secondTargetFindings},
 }
 return emitter.EmitFindings(results...)
 ```
 
-Each inner `Findings` slice may contain multiple findings for its target. The same
+Each inner `Items` slice may contain multiple findings for its target. The same
 single-result and batch forms work with `EmitDomains` and `EmitServices`; see the
 [runnable examples](#examples-and-development).
 

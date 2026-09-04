@@ -91,7 +91,7 @@ func TestAgentRunResumesPollingAfterTransientFailure(t *testing.T) {
 		return &pb.JobCompletedResponse{Success: true}, nil
 	}}
 	a := newAgentTest(t, s, func(ctx context.Context, targets []contract.Target, emit contract.Emitter) error {
-		return emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}})
+		return emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
 	}, func(cfg *Config) { cfg.PollInterval = 25 * time.Millisecond })
 	if err := a.Run(ctx); err != nil {
 		t.Errorf("Run stopped at transient poll failure: %v", err)
@@ -149,7 +149,7 @@ func TestAgentRunBoundsConcurrencyAndDrainsParentCancellation(t *testing.T) {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-release:
-			return emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}})
+			return emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
 		}
 	}, func(cfg *Config) { cfg.MaxConcurrency = 2 })
 	done := make(chan error, 1)
@@ -183,7 +183,7 @@ func TestAgentRunForcedShutdownClosesEmitterAndReportsFailure(t *testing.T) {
 	a := newAgentTest(t, s, func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
 		close(started)
 		<-release // Deliberately ignore cancellation to exercise the SDK boundary.
-		late <- emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}})
+		late <- emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
 		return nil
 	}, func(cfg *Config) { cfg.ShutdownTimeout = 30 * time.Millisecond })
 	done := make(chan error, 1)
@@ -214,7 +214,7 @@ func TestAgentRunContinuesAfterIndividualJobFailure(t *testing.T) {
 		if scans.Add(1) == 1 {
 			return errors.New("scanner failed this job")
 		}
-		return emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}})
+		return emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
 	})
 	done := make(chan error, 1)
 	go func() { done <- a.Run(ctx) }()

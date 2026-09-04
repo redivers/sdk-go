@@ -40,8 +40,8 @@ func scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter
 		}
 		if finding != nil {
 			results = append(results, rediver.FindingResult{
-				Target:   target,
-				Findings: []rediver.Finding{*finding},
+				Target: target,
+				Items:  []rediver.Finding{*finding},
 			})
 		}
 	}

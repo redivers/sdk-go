@@ -22,8 +22,8 @@ func scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter
 			return fmt.Errorf("resolve %s: %w", target.Domain, err)
 		}
 		if err := emitter.EmitDomains(rediver.DNSResult{
-			Target:  target,
-			Records: []rediver.DNSRecord{{Domain: target.Domain, IPs: ips}},
+			Target: target,
+			Items:  []rediver.DNSRecord{{Domain: target.Domain, IPs: ips}},
 		}); err != nil {
 			return err
 		}

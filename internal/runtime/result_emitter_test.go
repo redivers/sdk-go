@@ -71,7 +71,7 @@ func TestResultEmitterCloseInterruptsUploadWithoutDeadlock(t *testing.T) {
 	emitter, targets = mustEmitter(t, context.Background(), emitterJob(pb.Scanner_SCANNER_VULNERABILITY), backend)
 	done := make(chan error, 1)
 	go func() {
-		done <- emitter.EmitFindings(contract.FindingResult{Target: targets[0], Findings: []contract.Finding{{Name: "record", Severity: contract.SeverityInfo}}})
+		done <- emitter.EmitFindings(contract.FindingResult{Target: targets[0], Items: []contract.Finding{{Name: "record", Severity: contract.SeverityInfo}}})
 	}()
 	select {
 	case err := <-done:
@@ -107,7 +107,7 @@ func TestResultEmitterFinishDrainsActiveCall(t *testing.T) {
 	emitter, targets := mustEmitter(t, context.Background(), emitterJob(pb.Scanner_SCANNER_VULNERABILITY), backend)
 	emitted := make(chan error, 1)
 	go func() {
-		emitted <- emitter.EmitFindings(contract.FindingResult{Target: targets[0], Findings: []contract.Finding{{Name: "record", Severity: contract.SeverityInfo}}})
+		emitted <- emitter.EmitFindings(contract.FindingResult{Target: targets[0], Items: []contract.Finding{{Name: "record", Severity: contract.SeverityInfo}}})
 	}()
 	select {
 	case <-entered:
@@ -147,11 +147,11 @@ func TestResultEmitterRecoveredUploadPanicRemainsStickyAndReleasesLocks(t *testi
 				defer func() { recovered = recover() }()
 				switch kind {
 				case pb.Scanner_SCANNER_SUBDOMAIN:
-					_ = emitter.EmitDomains(contract.DNSResult{Target: targets[0], Records: []contract.DNSRecord{{Domain: "example.com"}}})
+					_ = emitter.EmitDomains(contract.DNSResult{Target: targets[0], Items: []contract.DNSRecord{{Domain: "example.com"}}})
 				case pb.Scanner_SCANNER_SERVICE_DISCOVER:
-					_ = emitter.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}})
+					_ = emitter.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
 				default:
-					_ = emitter.EmitFindings(contract.FindingResult{Target: targets[0], Findings: []contract.Finding{{Name: "observed", Severity: contract.SeverityInfo}}})
+					_ = emitter.EmitFindings(contract.FindingResult{Target: targets[0], Items: []contract.Finding{{Name: "observed", Severity: contract.SeverityInfo}}})
 				}
 			}()
 			if recovered != "transport failed" {
@@ -223,14 +223,14 @@ func TestScannerEmitWaitsForAcknowledgementAndSerializesConcurrentCalls(t *testi
 	scanner := contract.ScanFunc(func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
 		errs := make(chan error, 2)
 		go func() {
-			err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 80}}})
+			err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 80}}})
 			returned <- struct{}{}
 			errs <- err
 		}()
 		<-firstEntered
 		go func() {
 			close(secondIssued)
-			err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}})
+			err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
 			returned <- struct{}{}
 			errs <- err
 		}()
@@ -285,7 +285,7 @@ func TestScannerRejectsWrongEmitterMethodIncludingEmptyCalls(t *testing.T) {
 			case "empty inner slice":
 				return emit.EmitDomains(contract.DNSResult{Target: target})
 			default:
-				return emit.EmitDomains(contract.DNSResult{Target: target, Records: []contract.DNSRecord{{Domain: "www.example.com"}}})
+				return emit.EmitDomains(contract.DNSResult{Target: target, Items: []contract.DNSRecord{{Domain: "www.example.com"}}})
 			}
 		}},
 		{pb.Scanner_SCANNER_SERVICE_DISCOVER, "EmitServices", func(emit contract.Emitter, target contract.Target, form string) error {
@@ -297,7 +297,7 @@ func TestScannerRejectsWrongEmitterMethodIncludingEmptyCalls(t *testing.T) {
 			case "empty inner slice":
 				return emit.EmitServices(contract.ServiceResult{Target: target})
 			default:
-				return emit.EmitServices(contract.ServiceResult{Target: target, Services: []contract.Service{{Port: 443}}})
+				return emit.EmitServices(contract.ServiceResult{Target: target, Items: []contract.Service{{Port: 443}}})
 			}
 		}},
 		{pb.Scanner_SCANNER_VULNERABILITY, "EmitFindings", func(emit contract.Emitter, target contract.Target, form string) error {
@@ -309,7 +309,7 @@ func TestScannerRejectsWrongEmitterMethodIncludingEmptyCalls(t *testing.T) {
 			case "empty inner slice":
 				return emit.EmitFindings(contract.FindingResult{Target: target})
 			default:
-				return emit.EmitFindings(contract.FindingResult{Target: target, Findings: []contract.Finding{{Name: "observed", Severity: contract.SeverityHigh}}})
+				return emit.EmitFindings(contract.FindingResult{Target: target, Items: []contract.Finding{{Name: "observed", Severity: contract.SeverityHigh}}})
 			}
 		}},
 	}
@@ -364,7 +364,7 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 				case pb.Scanner_SCANNER_SUBDOMAIN:
 					ttl := 60
 					records := []contract.DNSRecord{{Domain: "first.example.com", IPs: []string{"192.0.2.3"}, TXT: []string{"observed"}, TTL: &ttl}}
-					results := []contract.DNSResult{{Target: target, Records: records}, {Target: target, Records: []contract.DNSRecord{{Domain: "second.example.com"}}}}
+					results := []contract.DNSResult{{Target: target, Items: records}, {Target: target, Items: []contract.DNSRecord{{Domain: "second.example.com"}}}}
 					if err := emit.EmitDomains(results...); err != nil {
 						return err
 					}
@@ -372,9 +372,9 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 						return err
 					}
 					records[0].Domain, records[0].IPs[0], records[0].TXT[0], ttl = "changed.invalid", "192.0.2.99", "changed", 90
-					results[1].Records[0].Domain = "changed.invalid"
+					results[1].Items[0].Domain = "changed.invalid"
 					results[0] = contract.DNSResult{Target: contract.Target{Domain: "changed.invalid"}}
-					if err := emit.EmitDomains(contract.DNSResult{Target: target, Records: []contract.DNSRecord{
+					if err := emit.EmitDomains(contract.DNSResult{Target: target, Items: []contract.DNSRecord{
 						{Domain: "third.example.com"}, {Domain: "fourth.example.com"},
 					}}); err != nil {
 						return err
@@ -386,7 +386,7 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 						HTTP:        &contract.HTTPData{Title: "observed", IPs: []string{"192.0.2.3"}, Technologies: []string{"original"}},
 						Certificate: &contract.Certificate{SubjectAN: []string{"example.com"}, Wildcard: &wildcard},
 					}}
-					results := []contract.ServiceResult{{Target: target, Services: services}, {Target: target, Services: []contract.Service{{Port: 81}}}}
+					results := []contract.ServiceResult{{Target: target, Items: services}, {Target: target, Items: []contract.Service{{Port: 81}}}}
 					if err := emit.EmitServices(results...); err != nil {
 						return err
 					}
@@ -396,9 +396,9 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 					service := &services[0]
 					service.Port, service.CPEs[0], service.HTTP.Title, service.HTTP.IPs[0] = 65536, "changed", "changed", "192.0.2.99"
 					service.HTTP.Technologies[0], service.Certificate.SubjectAN[0], wildcard = "changed", "changed.invalid", true
-					results[1].Services[0].Port = 65536
+					results[1].Items[0].Port = 65536
 					results[0] = contract.ServiceResult{Target: contract.Target{Host: "changed.invalid"}}
-					if err := emit.EmitServices(contract.ServiceResult{Target: target, Services: []contract.Service{{Port: 82}, {Port: 443}}}); err != nil {
+					if err := emit.EmitServices(contract.ServiceResult{Target: target, Items: []contract.Service{{Port: 82}, {Port: 443}}}); err != nil {
 						return err
 					}
 				case pb.Scanner_SCANNER_VULNERABILITY:
@@ -408,7 +408,7 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 						CWEs: []string{"CWE-79"}, References: []string{"https://example.com/reference"},
 						Requests: []contract.RawHTTPRequest{{Request: "GET / HTTP/1.1", Response: "HTTP/1.1 200 OK"}},
 					}}
-					results := []contract.FindingResult{{Target: target, Findings: findings}, {Target: target, Findings: []contract.Finding{{Name: "second", Severity: contract.SeverityInfo}}}}
+					results := []contract.FindingResult{{Target: target, Items: findings}, {Target: target, Items: []contract.Finding{{Name: "second", Severity: contract.SeverityInfo}}}}
 					if err := emit.EmitFindings(results...); err != nil {
 						return err
 					}
@@ -417,9 +417,9 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 					}
 					first := &findings[0]
 					first.Name, first.CWEs[0], first.References[0], first.Requests[0].Request, score = "changed", "changed", "changed", "changed", 1
-					results[1].Findings[0].Name = "changed"
+					results[1].Items[0].Name = "changed"
 					results[0] = contract.FindingResult{Target: contract.Target{Host: "changed.invalid"}}
-					if err := emit.EmitFindings(contract.FindingResult{Target: target, Findings: []contract.Finding{
+					if err := emit.EmitFindings(contract.FindingResult{Target: target, Items: []contract.Finding{
 						{Name: "third", Severity: contract.SeverityLow}, {Name: "fourth", Severity: contract.SeverityMedium},
 					}}); err != nil {
 						return err
@@ -531,34 +531,34 @@ func TestScannerValidatesWholeEmitCallAndPreservesEarlierAcknowledgements(t *tes
 						switch kind {
 						case pb.Scanner_SCANNER_SUBDOMAIN:
 							valid := contract.DNSRecord{Domain: "www.example.com"}
-							results := []contract.DNSResult{{Target: first, Records: []contract.DNSRecord{valid}}, {Target: last, Records: []contract.DNSRecord{valid}}}
+							results := []contract.DNSResult{{Target: first, Items: []contract.DNSRecord{valid}}, {Target: last, Items: []contract.DNSRecord{valid}}}
 							if invalid == "later observation" {
-								results[0].Records = append(results[0].Records, contract.DNSRecord{Domain: "unrelated.invalid"})
+								results[0].Items = append(results[0].Items, contract.DNSRecord{Domain: "unrelated.invalid"})
 							} else if invalid == "later wrapper" {
-								results[1].Records[0].Domain = "unrelated.invalid"
+								results[1].Items[0].Domain = "unrelated.invalid"
 							} else if invalid == "empty reconstructed target" {
-								results[1].Records = nil
+								results[1].Items = nil
 							}
 							emissionErr = emit.EmitDomains(results...)
 						case pb.Scanner_SCANNER_SERVICE_DISCOVER:
-							results := []contract.ServiceResult{{Target: first, Services: []contract.Service{{Port: 80}}}, {Target: last, Services: []contract.Service{{Port: 443}}}}
+							results := []contract.ServiceResult{{Target: first, Items: []contract.Service{{Port: 80}}}, {Target: last, Items: []contract.Service{{Port: 443}}}}
 							if invalid == "later observation" {
-								results[0].Services = append(results[0].Services, contract.Service{Port: 65536})
+								results[0].Items = append(results[0].Items, contract.Service{Port: 65536})
 							} else if invalid == "later wrapper" {
-								results[1].Services[0].Port = 65536
+								results[1].Items[0].Port = 65536
 							} else if invalid == "empty reconstructed target" {
-								results[1].Services = nil
+								results[1].Items = nil
 							}
 							emissionErr = emit.EmitServices(results...)
 						default:
 							valid := contract.Finding{Name: "observed", Severity: contract.SeverityHigh}
-							results := []contract.FindingResult{{Target: first, Findings: []contract.Finding{valid}}, {Target: last, Findings: []contract.Finding{valid}}}
+							results := []contract.FindingResult{{Target: first, Items: []contract.Finding{valid}}, {Target: last, Items: []contract.Finding{valid}}}
 							if invalid == "later observation" {
-								results[0].Findings = append(results[0].Findings, contract.Finding{})
+								results[0].Items = append(results[0].Items, contract.Finding{})
 							} else if invalid == "later wrapper" {
-								results[1].Findings[0].Severity = contract.SeverityUnspecified
+								results[1].Items[0].Severity = contract.SeverityUnspecified
 							} else if invalid == "empty reconstructed target" {
-								results[1].Findings = nil
+								results[1].Items = nil
 							}
 							emissionErr = emit.EmitFindings(results...)
 						}
@@ -588,11 +588,11 @@ func TestScannerValidatesWholeEmitCallAndPreservesEarlierAcknowledgements(t *tes
 func scannerAPIEmitValid(kind pb.Scanner, emit contract.Emitter, target contract.Target) error {
 	switch kind {
 	case pb.Scanner_SCANNER_SUBDOMAIN:
-		return emit.EmitDomains(contract.DNSResult{Target: target, Records: []contract.DNSRecord{{Domain: "www." + target.Domain}}})
+		return emit.EmitDomains(contract.DNSResult{Target: target, Items: []contract.DNSRecord{{Domain: "www." + target.Domain}}})
 	case pb.Scanner_SCANNER_SERVICE_DISCOVER:
-		return emit.EmitServices(contract.ServiceResult{Target: target, Services: []contract.Service{{Port: 443}}})
+		return emit.EmitServices(contract.ServiceResult{Target: target, Items: []contract.Service{{Port: 443}}})
 	default:
-		return emit.EmitFindings(contract.FindingResult{Target: target, Findings: []contract.Finding{{Name: "observed", Severity: contract.SeverityHigh}}})
+		return emit.EmitFindings(contract.FindingResult{Target: target, Items: []contract.Finding{{Name: "observed", Severity: contract.SeverityHigh}}})
 	}
 }
 
@@ -605,7 +605,7 @@ func TestScannerDNSOwnRecordIsOptionalAndCanRepeatInLaterCalls(t *testing.T) {
 			{Domain: "EXAMPLE.COM.", TTL: ptr(600)},
 			{Domain: "www.example.com", TTL: ptr(60)},
 		} {
-			if err := emit.EmitDomains(contract.DNSResult{Target: targets[0], Records: []contract.DNSRecord{record}}); err != nil {
+			if err := emit.EmitDomains(contract.DNSResult{Target: targets[0], Items: []contract.DNSRecord{record}}); err != nil {
 				return err
 			}
 		}
@@ -636,8 +636,8 @@ func TestScannerRejectsDuplicateDNSOwnDomainAcrossMergedWrappers(t *testing.T) {
 			var emissionErr error
 			scanner := contract.ScanFunc(func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
 				emissionErr = emit.EmitDomains(
-					contract.DNSResult{Target: targets[0], Records: []contract.DNSRecord{{Domain: domain}}},
-					contract.DNSResult{Target: targets[0], Records: []contract.DNSRecord{{Domain: domain + "."}}},
+					contract.DNSResult{Target: targets[0], Items: []contract.DNSRecord{{Domain: domain}}},
+					contract.DNSResult{Target: targets[0], Items: []contract.DNSRecord{{Domain: domain + "."}}},
 				)
 				return nil
 			})
@@ -658,11 +658,11 @@ func TestScannerPreservesRepeatedDNSDescendantsAcrossMergedWrappers(t *testing.T
 	server := &scannerAPIServer{job: scannerAPIJob(pb.Scanner_SCANNER_SUBDOMAIN)}
 	scanner := contract.ScanFunc(func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
 		return emit.EmitDomains(
-			contract.DNSResult{Target: targets[0], Records: []contract.DNSRecord{
+			contract.DNSResult{Target: targets[0], Items: []contract.DNSRecord{
 				{Domain: "www.example.com", TXT: []string{"first"}, TTL: ptr(300)},
 				{Domain: "api.example.com", TXT: []string{"distinct"}},
 			}},
-			contract.DNSResult{Target: targets[0], Records: []contract.DNSRecord{
+			contract.DNSResult{Target: targets[0], Items: []contract.DNSRecord{
 				{Domain: "WWW.EXAMPLE.COM.", TXT: []string{"second"}},
 			}},
 		)
@@ -701,9 +701,9 @@ func TestScannerEmitsMultipleTargetsAndMergesRepeatedResultSets(t *testing.T) {
 					switch kind {
 					case pb.Scanner_SCANNER_SUBDOMAIN:
 						results := []contract.DNSResult{
-							{Target: targets[1], Records: []contract.DNSRecord{{Domain: "one.example.com"}}},
-							{Target: targets[0], Records: []contract.DNSRecord{{Domain: "two.example.com"}, {Domain: "three.example.com"}}},
-							{Target: targets[1], Records: []contract.DNSRecord{{Domain: "four.example.com"}}},
+							{Target: targets[1], Items: []contract.DNSRecord{{Domain: "one.example.com"}}},
+							{Target: targets[0], Items: []contract.DNSRecord{{Domain: "two.example.com"}, {Domain: "three.example.com"}}},
+							{Target: targets[1], Items: []contract.DNSRecord{{Domain: "four.example.com"}}},
 						}
 						var err error
 						if form == "variadic" {
@@ -714,12 +714,12 @@ func TestScannerEmitsMultipleTargetsAndMergesRepeatedResultSets(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						return emit.EmitDomains(contract.DNSResult{Target: targets[0], Records: []contract.DNSRecord{{Domain: "five.example.com"}}})
+						return emit.EmitDomains(contract.DNSResult{Target: targets[0], Items: []contract.DNSRecord{{Domain: "five.example.com"}}})
 					case pb.Scanner_SCANNER_SERVICE_DISCOVER:
 						results := []contract.ServiceResult{
-							{Target: targets[1], Services: []contract.Service{{Port: 80}}},
-							{Target: targets[0], Services: []contract.Service{{Port: 81}, {Port: 82}}},
-							{Target: targets[1], Services: []contract.Service{{Port: 443}}},
+							{Target: targets[1], Items: []contract.Service{{Port: 80}}},
+							{Target: targets[0], Items: []contract.Service{{Port: 81}, {Port: 82}}},
+							{Target: targets[1], Items: []contract.Service{{Port: 443}}},
 						}
 						var err error
 						if form == "variadic" {
@@ -730,15 +730,15 @@ func TestScannerEmitsMultipleTargetsAndMergesRepeatedResultSets(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						return emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}})
+						return emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
 					default:
 						finding := func(name string) contract.Finding {
 							return contract.Finding{Name: name, Severity: contract.SeverityHigh}
 						}
 						results := []contract.FindingResult{
-							{Target: targets[1], Findings: []contract.Finding{finding("one")}},
-							{Target: targets[0], Findings: []contract.Finding{finding("two"), finding("three")}},
-							{Target: targets[1], Findings: []contract.Finding{finding("four")}},
+							{Target: targets[1], Items: []contract.Finding{finding("one")}},
+							{Target: targets[0], Items: []contract.Finding{finding("two"), finding("three")}},
+							{Target: targets[1], Items: []contract.Finding{finding("four")}},
 						}
 						var err error
 						if form == "variadic" {
@@ -749,7 +749,7 @@ func TestScannerEmitsMultipleTargetsAndMergesRepeatedResultSets(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						return emit.EmitFindings(contract.FindingResult{Target: targets[0], Findings: []contract.Finding{finding("five")}})
+						return emit.EmitFindings(contract.FindingResult{Target: targets[0], Items: []contract.Finding{finding("five")}})
 					}
 				})
 				if err := runScannerAPIOnce(t, newScannerAPIAgent(t, server, scanner)); err != nil {
@@ -834,7 +834,7 @@ func TestScannerUploadRetryDoesNotRescanBatch(t *testing.T) {
 	}
 	scanner := contract.ScanFunc(func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
 		calls.Add(1)
-		return emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}})
+		return emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
 	})
 	policy := contract.DefaultRetryPolicy()
 	policy.MaxAttempts, policy.InitialBackoff, policy.MaxBackoff, policy.Jitter = 2, time.Millisecond, time.Millisecond, false
@@ -862,7 +862,7 @@ func TestResultEmitterRetainsUploadErrorsAndRejectedAcknowledgements(t *testing.
 				return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("stale run"))
 			}}
 			emitter, targets := mustEmitter(t, context.Background(), emitterJob(pb.Scanner_SCANNER_SERVICE_DISCOVER), backend)
-			emitErr := emitter.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}})
+			emitErr := emitter.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
 			finishErr := emitter.finish()
 			if emitErr == nil || !errors.Is(finishErr, emitErr) {
 				t.Fatalf("emit = %v, finish = %v", emitErr, finishErr)

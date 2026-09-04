@@ -18,7 +18,7 @@ func TestPushRecordLimitResetsForEachCall(t *testing.T) {
 	for i := range findings {
 		findings[i] = contract.Finding{Name: "record", Severity: contract.SeverityInfo}
 	}
-	result := contract.FindingResult{Target: a.Targets()[0], Findings: findings}
+	result := contract.FindingResult{Target: a.Targets()[0], Items: findings}
 	for i := 0; i < 2; i++ {
 		if err := c.PushFindings(context.Background(), a, result); err != nil {
 			t.Fatalf("individually valid chunk: %v", err)
@@ -42,11 +42,9 @@ func TestGroupEmissionResultsMergesRepeatedTargetsInFirstAppearanceOrder(t *test
 	a := preparedAssignment(t, job)
 	targets := a.Targets()
 	groups, err := groupEmissionResults(a, []contract.ServiceResult{
-		{Target: targets[1], Services: []contract.Service{{Port: 80}}},
-		{Target: targets[0], Services: []contract.Service{{Port: 81}}},
-		{Target: targets[1], Services: []contract.Service{{Port: 443}}},
-	}, func(result contract.ServiceResult) (contract.Target, []contract.Service) {
-		return result.Target, result.Services
+		{Target: targets[1], Items: []contract.Service{{Port: 80}}},
+		{Target: targets[0], Items: []contract.Service{{Port: 81}}},
+		{Target: targets[1], Items: []contract.Service{{Port: 443}}},
 	})
 	if err != nil || len(groups) != 2 || groups[0].target != other || groups[1].target != job.Targets[0] || len(groups[0].observations) != 2 || groups[0].observations[1].Port != 443 {
 		t.Fatalf("groups=%v error=%v", groups, err)
@@ -67,19 +65,19 @@ func TestPushValidatesEveryTargetBeforeAnyUpload(t *testing.T) {
 					if empty {
 						record = nil
 					}
-					return c.PushDomains(context.Background(), a, contract.DNSResult{Target: original, Records: record}, contract.DNSResult{Target: target})
+					return c.PushDomains(context.Background(), a, contract.DNSResult{Target: original, Items: record}, contract.DNSResult{Target: target})
 				case pb.Scanner_SCANNER_SERVICE_DISCOVER:
 					records := []contract.Service{{Port: 443}}
 					if empty {
 						records = nil
 					}
-					return c.PushServices(context.Background(), a, contract.ServiceResult{Target: original, Services: records}, contract.ServiceResult{Target: target})
+					return c.PushServices(context.Background(), a, contract.ServiceResult{Target: original, Items: records}, contract.ServiceResult{Target: target})
 				default:
 					records := []contract.Finding{{Name: "finding", Severity: contract.SeverityInfo}}
 					if empty {
 						records = nil
 					}
-					return c.PushFindings(context.Background(), a, contract.FindingResult{Target: original, Findings: records}, contract.FindingResult{Target: target})
+					return c.PushFindings(context.Background(), a, contract.FindingResult{Target: original, Items: records}, contract.FindingResult{Target: target})
 				}
 			}
 			if err := emit(original, true); err != nil {

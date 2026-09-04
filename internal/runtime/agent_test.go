@@ -52,7 +52,7 @@ func TestAgentCancellationAndStopUseLiveFailureContext(t *testing.T) {
 				return &pb.JobFailureResponse{Success: true}, nil
 			}}
 			a := newAgentTest(t, s, func(ctx context.Context, targets []contract.Target, emit contract.Emitter) error {
-				if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}}); err != nil {
+				if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}}); err != nil {
 					return err
 				}
 				close(started)
@@ -94,7 +94,7 @@ func TestAgentRunnerHeartbeatFailureStopsPollingAndWork(t *testing.T) {
 		}
 	}}
 	a := newAgentTest(t, s, func(ctx context.Context, targets []contract.Target, emit contract.Emitter) error {
-		if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}}); err != nil {
+		if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}}); err != nil {
 			return err
 		}
 		close(started)

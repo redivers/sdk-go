@@ -16,9 +16,7 @@ func (c *Client) PushDomains(ctx context.Context, a *Assignment, results ...cont
 	if err := a.validatePush(pb.Scanner_SCANNER_SUBDOMAIN); err != nil {
 		return err
 	}
-	groups, err := groupEmissionResults(a, results, func(result contract.DNSResult) (contract.Target, []contract.DNSRecord) {
-		return result.Target, result.Records
-	})
+	groups, err := groupEmissionResults(a, results)
 	if err != nil || len(groups) == 0 {
 		return err
 	}
@@ -45,9 +43,7 @@ func (c *Client) PushServices(ctx context.Context, a *Assignment, results ...con
 	if err := a.validatePush(pb.Scanner_SCANNER_SERVICE_DISCOVER); err != nil {
 		return err
 	}
-	groups, err := groupEmissionResults(a, results, func(result contract.ServiceResult) (contract.Target, []contract.Service) {
-		return result.Target, result.Services
-	})
+	groups, err := groupEmissionResults(a, results)
 	if err != nil || len(groups) == 0 {
 		return err
 	}
@@ -74,9 +70,7 @@ func (c *Client) PushFindings(ctx context.Context, a *Assignment, results ...con
 	if err := a.validatePush(pb.Scanner_SCANNER_VULNERABILITY); err != nil {
 		return err
 	}
-	groups, err := groupEmissionResults(a, results, func(result contract.FindingResult) (contract.Target, []contract.Finding) {
-		return result.Target, result.Findings
-	})
+	groups, err := groupEmissionResults(a, results)
 	if err != nil || len(groups) == 0 {
 		return err
 	}

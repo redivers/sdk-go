@@ -50,7 +50,7 @@ func TestAgentPreservesFatalUploadCauseArrivingDuringDrain(t *testing.T) {
 	scanErr := errors.New("scanner cleanup failed")
 	agent := newAgentTest(t, server, func(ctx context.Context, targets []contract.Target, emit contract.Emitter) error {
 		go func() {
-			uploadDone <- emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}})
+			uploadDone <- emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
 		}()
 		select {
 		case <-started:
@@ -109,7 +109,7 @@ func TestAgentRunOnceLifecycleAndCapturedIdentity(t *testing.T) {
 		targets[0].Host, targets[0].Rate = "mutated.example.com", 999
 		targets[0].Ports[0] = 1234
 		time.Sleep(35 * time.Millisecond)
-		return emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}})
+		return emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
 	}, func(cfg *Config) { cfg.RunnerID = "runner-requested" }, func(cfg *Config) { cfg.Hostname = "scanner-host" }, func(cfg *Config) { cfg.Version = "v-test" }, func(cfg *Config) { cfg.IPAddress = "192.0.2.10" })
 	if err := a.RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -184,23 +184,23 @@ func TestAgentExecutionFailuresAreReported(t *testing.T) {
 		{name: "scanner error", wantError: "scan failed", handler: func(context.Context, []contract.Target, contract.Emitter) error { return errors.New("scan failed") }},
 		{name: "panic", wantError: "scanner panic", handler: func(context.Context, []contract.Target, contract.Emitter) error { panic("scanner panic") }},
 		{name: "ignored upload", rejectPush: true, wantError: "rejected", wantPushes: 1, handler: func(ctx context.Context, targets []contract.Target, emit contract.Emitter) error {
-			_ = emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}})
+			_ = emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
 			return nil
 		}},
 		{name: "error after accepted upload", wantError: "local cleanup failed", wantPushes: 1, handler: func(ctx context.Context, targets []contract.Target, emit contract.Emitter) error {
-			if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}}); err != nil {
+			if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}}); err != nil {
 				return err
 			}
 			return errors.New("local cleanup failed")
 		}},
 		{name: "panic after accepted upload", wantError: "cleanup panic", wantPushes: 1, handler: func(ctx context.Context, targets []contract.Target, emit contract.Emitter) error {
-			if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}}); err != nil {
+			if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}}); err != nil {
 				return err
 			}
 			panic("cleanup panic")
 		}},
 		{name: "ignored validation after accepted upload", wantError: "original target", wantPushes: 1, handler: func(ctx context.Context, targets []contract.Target, emit contract.Emitter) error {
-			if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}}); err != nil {
+			if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}}); err != nil {
 				return err
 			}
 			_ = emit.EmitServices(contract.ServiceResult{})
@@ -239,7 +239,7 @@ func TestAgentCompletionRejectedAndNeverRetried(t *testing.T) {
 			return &pb.JobCompletedResponse{Message: ptr("terminal rejected")}, terminalErr
 		}}
 		a := newAgentTest(t, s, func(ctx context.Context, targets []contract.Target, emit contract.Emitter) error {
-			return emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}})
+			return emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
 		}, func(cfg *Config) { cfg.RetryPolicy = contract.DefaultRetryPolicy() })
 		if err := a.RunOnce(context.Background()); err == nil {
 			t.Fatal("completion failure lost")
@@ -317,7 +317,7 @@ func TestAgentRepeatedUploadsDoNotCompleteBeforeScanReturns(t *testing.T) {
 	s := &agentServer{job: agentTestJob()}
 	a := newAgentTest(t, s, func(ctx context.Context, targets []contract.Target, emit contract.Emitter) error {
 		for _, port := range []int{80, 443} {
-			if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: port}}}); err != nil {
+			if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: port}}}); err != nil {
 				return err
 			}
 		}
@@ -379,7 +379,7 @@ func TestAgentDrainsActiveUploadBeforeTerminalCallback(t *testing.T) {
 				// Deliberately return with an upload active to verify the runtime
 				// drains an uncooperative scanner before reporting its outcome.
 				go func() {
-					pushDone <- emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}})
+					pushDone <- emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
 				}()
 				select {
 				case <-started:
@@ -450,7 +450,7 @@ func TestAgentStaleUploadCancelsIgnoringHandler(t *testing.T) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("stale upload run"))
 	}}
 	a := newAgentTest(t, s, func(ctx context.Context, targets []contract.Target, emit contract.Emitter) error {
-		_ = emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}})
+		_ = emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
 		<-ctx.Done()
 		return ctx.Err()
 	})
@@ -480,7 +480,7 @@ func TestAgentStaleHeartbeatCancelsWorkWithoutRetry(t *testing.T) {
 				return connect.NewError(code, errors.New("lease lost"))
 			}}
 			a := newAgentTest(t, s, func(ctx context.Context, targets []contract.Target, emit contract.Emitter) error {
-				if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}}); err != nil {
+				if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}}); err != nil {
 					return err
 				}
 				close(accepted)
@@ -522,7 +522,7 @@ func TestScannerAcknowledgesConcurrentFindingsBeforeWholeBatchReturns(t *testing
 			workers.Add(1)
 			go func() {
 				defer workers.Done()
-				errs <- emit.EmitFindings(contract.FindingResult{Target: targets[i%2], Findings: []contract.Finding{
+				errs <- emit.EmitFindings(contract.FindingResult{Target: targets[i%2], Items: []contract.Finding{
 					{Name: fmt.Sprintf("finding-%d", i), Severity: contract.SeverityHigh},
 				}})
 			}()
@@ -614,17 +614,17 @@ func TestScannerCompletesEveryUnobservedBatchTarget(t *testing.T) {
 				case pb.Scanner_SCANNER_SUBDOMAIN:
 					return errors.Join(
 						emit.EmitDomains(), emit.EmitDomains([]contract.DNSResult(nil)...), emit.EmitDomains([]contract.DNSResult{}...),
-						emit.EmitDomains(contract.DNSResult{Target: targets[0]}, contract.DNSResult{Target: targets[1], Records: []contract.DNSRecord{}}),
+						emit.EmitDomains(contract.DNSResult{Target: targets[0]}, contract.DNSResult{Target: targets[1], Items: []contract.DNSRecord{}}),
 					)
 				case pb.Scanner_SCANNER_SERVICE_DISCOVER:
 					return errors.Join(
 						emit.EmitServices(), emit.EmitServices([]contract.ServiceResult(nil)...), emit.EmitServices([]contract.ServiceResult{}...),
-						emit.EmitServices(contract.ServiceResult{Target: targets[0]}, contract.ServiceResult{Target: targets[1], Services: []contract.Service{}}),
+						emit.EmitServices(contract.ServiceResult{Target: targets[0]}, contract.ServiceResult{Target: targets[1], Items: []contract.Service{}}),
 					)
 				default:
 					return errors.Join(
 						emit.EmitFindings(), emit.EmitFindings([]contract.FindingResult(nil)...), emit.EmitFindings([]contract.FindingResult{}...),
-						emit.EmitFindings(contract.FindingResult{Target: targets[0]}, contract.FindingResult{Target: targets[1], Findings: []contract.Finding{}}),
+						emit.EmitFindings(contract.FindingResult{Target: targets[0]}, contract.FindingResult{Target: targets[1], Items: []contract.Finding{}}),
 					)
 				}
 			})
@@ -650,7 +650,7 @@ func TestScannerCancellationRetainsAcknowledgedResultsAndRejectsLateEmissions(t 
 	var calls atomic.Int32
 	scanner := contract.ScanFunc(func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
 		calls.Add(1)
-		if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 80}}}); err != nil {
+		if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 80}}}); err != nil {
 			returned <- err
 			return err
 		}
@@ -658,7 +658,7 @@ func TestScannerCancellationRetainsAcknowledgedResultsAndRejectsLateEmissions(t 
 		// Deliberately noncooperative engine: late emits cannot finalize
 		// canceled assignments, even after the Agent has already returned.
 		<-release
-		err := emit.EmitServices(contract.ServiceResult{Target: targets[1], Services: []contract.Service{{Port: 443}}})
+		err := emit.EmitServices(contract.ServiceResult{Target: targets[1], Items: []contract.Service{{Port: 443}}})
 		returned <- err
 		return nil
 	})
@@ -727,10 +727,10 @@ func TestScannerCancellationInterruptsInFlightEmission(t *testing.T) {
 	}
 	emitted := make(chan error, 1)
 	scanner := contract.ScanFunc(func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
-		if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 80}}}); err != nil {
+		if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 80}}}); err != nil {
 			return err
 		}
-		err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}})
+		err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
 		emitted <- err
 		return err
 	})
@@ -782,7 +782,7 @@ func TestScannerRejectsEmissionsAfterSuccessfulReturn(t *testing.T) {
 	if err := runScannerAPIOnce(t, newScannerAPIAgent(t, server, scanner)); err != nil {
 		t.Fatal(err)
 	}
-	if err := retainedEmit.EmitServices(contract.ServiceResult{Target: retainedTarget, Services: []contract.Service{{Port: 443}}}); err == nil {
+	if err := retainedEmit.EmitServices(contract.ServiceResult{Target: retainedTarget, Items: []contract.Service{{Port: 443}}}); err == nil {
 		t.Fatal("emitter remained open after Scan completed")
 	}
 	server.mu.Lock()
@@ -825,10 +825,10 @@ func TestScannerReceivesWholeBatchOnceAndPreservesAssignment(t *testing.T) {
 		// private reference, including optional presence and assigned host.
 		first := targets[0]
 		first.Host, first.URL, first.Port = "unrelated.example.net", "https://changed.invalid", 444
-		if err := emit.EmitServices(contract.ServiceResult{Target: first, Services: []contract.Service{{Port: 80}}}); err != nil {
+		if err := emit.EmitServices(contract.ServiceResult{Target: first, Items: []contract.Service{{Port: 80}}}); err != nil {
 			return err
 		}
-		return emit.EmitServices(contract.ServiceResult{Target: targets[1], Services: []contract.Service{{Port: 443}}})
+		return emit.EmitServices(contract.ServiceResult{Target: targets[1], Items: []contract.Service{{Port: 443}}})
 	})
 	agent := newScannerAPIAgent(t, server, scanner)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -864,7 +864,7 @@ func TestScannerBatchErrorPreservesAcknowledgedResults(t *testing.T) {
 	failure := errors.New("bulk engine did not finish")
 	scanner := contract.ScanFunc(func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
 		for _, target := range targets {
-			if err := emit.EmitServices(contract.ServiceResult{Target: target, Services: []contract.Service{{Port: 443}}}); err != nil {
+			if err := emit.EmitServices(contract.ServiceResult{Target: target, Items: []contract.Service{{Port: 443}}}); err != nil {
 				return err
 			}
 		}
@@ -899,8 +899,8 @@ func TestScannerUploadErrorIsImmediateAndSticky(t *testing.T) {
 			scanner := contract.ScanFunc(func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
 				defer close(scanReturned)
 				calls.Add(1)
-				emissionErr = emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}})
-				stickyErr = emit.EmitServices(contract.ServiceResult{Target: targets[1], Services: []contract.Service{{Port: 80}}})
+				emissionErr = emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
+				stickyErr = emit.EmitServices(contract.ServiceResult{Target: targets[1], Items: []contract.Service{{Port: 80}}})
 				return nil
 			})
 			err := runScannerAPIOnce(t, newScannerAPIAgent(t, server, scanner))
@@ -925,7 +925,7 @@ func TestScannerUploadErrorIsImmediateAndSticky(t *testing.T) {
 func TestScannerPanicPreservesAcknowledgedResults(t *testing.T) {
 	server := &scannerAPIServer{job: scannerAPIJob(pb.Scanner_SCANNER_SERVICE_DISCOVER)}
 	scanner := contract.ScanFunc(func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
-		if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Services: []contract.Service{{Port: 443}}}); err != nil {
+		if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}}); err != nil {
 			return err
 		}
 		panic("scanner exploded")
@@ -993,7 +993,7 @@ func scannerAPIHandler(t *testing.T, kind pb.Scanner, adapter string, calls *ato
 			}
 			if !empty {
 				// A descendant-only chunk must not invent parent metadata.
-				return emit.EmitDomains(contract.DNSResult{Target: target, Records: []contract.DNSRecord{
+				return emit.EmitDomains(contract.DNSResult{Target: target, Items: []contract.DNSRecord{
 					{Domain: "www.example.com", IPs: []string{"192.0.2.3"}},
 				}})
 			}
@@ -1002,14 +1002,14 @@ func scannerAPIHandler(t *testing.T, kind pb.Scanner, adapter string, calls *ato
 				t.Errorf("service input = %+v", target)
 			}
 			if !empty {
-				return emit.EmitServices(contract.ServiceResult{Target: target, Services: []contract.Service{{Port: 443}}})
+				return emit.EmitServices(contract.ServiceResult{Target: target, Items: []contract.Service{{Port: 443}}})
 			}
 		case pb.Scanner_SCANNER_VULNERABILITY:
 			if target.Host != "example.com" || target.Port != 443 || target.URL != "https://example.com/login" {
 				t.Errorf("vulnerability input = %+v", target)
 			}
 			if !empty {
-				return emit.EmitFindings(contract.FindingResult{Target: target, Findings: []contract.Finding{
+				return emit.EmitFindings(contract.FindingResult{Target: target, Items: []contract.Finding{
 					{Name: "Observed vulnerability", Severity: contract.SeverityHigh},
 				}})
 			}

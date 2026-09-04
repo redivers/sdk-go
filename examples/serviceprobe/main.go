@@ -54,8 +54,8 @@ func scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter
 			conn.Close()
 			// Host defaults to the assigned target's host when omitted.
 			if err := emitter.EmitServices(rediver.ServiceResult{
-				Target:   target,
-				Services: []rediver.Service{{Port: port, Transport: "tcp"}},
+				Target: target,
+				Items:  []rediver.Service{{Port: port, Transport: "tcp"}},
 			}); err != nil {
 				return err
 			}

@@ -19,17 +19,17 @@ type recordingEmitter struct {
 
 var _ rediver.Emitter = (*recordingEmitter)(nil)
 
-func (e *recordingEmitter) EmitDomains(results ...rediver.DNSResult) error {
+func (e *recordingEmitter) EmitDomains(results ...rediver.Result[rediver.DNSRecord]) error {
 	e.domains = append(e.domains, results...)
 	return e.err
 }
 
-func (e *recordingEmitter) EmitServices(results ...rediver.ServiceResult) error {
+func (e *recordingEmitter) EmitServices(results ...rediver.Result[rediver.Service]) error {
 	e.services = append(e.services, results...)
 	return e.err
 }
 
-func (e *recordingEmitter) EmitFindings(results ...rediver.FindingResult) error {
+func (e *recordingEmitter) EmitFindings(results ...rediver.Result[rediver.Finding]) error {
 	e.findings = append(e.findings, results...)
 	return e.err
 }
@@ -48,42 +48,52 @@ func TestScannerWithConsumerEmitter(t *testing.T) {
 			name: "domain",
 			scan: func(_ context.Context, targets []rediver.Target, emit rediver.Emitter) error {
 				return emit.EmitDomains(
-					rediver.DNSResult{Target: targets[0], Records: []rediver.DNSRecord{{Domain: targets[0].Domain}}},
-					rediver.DNSResult{Target: targets[1], Records: []rediver.DNSRecord{{Domain: targets[1].Domain}}},
+					rediver.Result[rediver.DNSRecord]{Target: targets[0], Items: []rediver.DNSRecord{{Domain: targets[0].Domain}}},
+					rediver.DNSResult{Target: targets[1], Items: []rediver.DNSRecord{{Domain: targets[1].Domain}}, ErrorMessage: rediver.Ptr("")},
+					rediver.DNSResult{Target: targets[1], Items: []rediver.DNSRecord{{Domain: "partial." + targets[1].Domain}}, ErrorMessage: rediver.Ptr("lookup incomplete")},
 				)
 			},
 			want: recordingEmitter{domains: []rediver.DNSResult{
-				{Target: targets[0], Records: []rediver.DNSRecord{{Domain: "one.example"}}},
-				{Target: targets[1], Records: []rediver.DNSRecord{{Domain: "two.example"}}},
+				{Target: targets[0], Items: []rediver.DNSRecord{{Domain: "one.example"}}},
+				{Target: targets[1], Items: []rediver.DNSRecord{{Domain: "two.example"}}, ErrorMessage: rediver.Ptr("")},
+				{Target: targets[1], Items: []rediver.DNSRecord{{Domain: "partial.two.example"}}, ErrorMessage: rediver.Ptr("lookup incomplete")},
 			}},
 		},
 		{
 			name: "service",
 			scan: func(_ context.Context, targets []rediver.Target, emit rediver.Emitter) error {
-				results := []rediver.ServiceResult{
-					{Target: targets[0], Services: []rediver.Service{{Host: targets[0].Host, Port: targets[0].Ports[0]}}},
-					{Target: targets[1], Services: []rediver.Service{{Host: targets[1].Host, Port: targets[1].Port}}},
+				results := []rediver.Result[rediver.Service]{
+					{Target: targets[0], Items: []rediver.Service{{Host: targets[0].Host, Port: targets[0].Ports[0]}}},
+					{Target: targets[1], Items: []rediver.Service{{Host: targets[1].Host, Port: targets[1].Port}}, ErrorMessage: rediver.Ptr("")},
+					{Target: targets[1], Items: []rediver.Service{{Host: targets[1].Host, Port: 443}}, ErrorMessage: rediver.Ptr("probe incomplete")},
 				}
 				return emit.EmitServices(results...)
 			},
 			want: recordingEmitter{services: []rediver.ServiceResult{
-				{Target: targets[0], Services: []rediver.Service{{Host: "192.0.2.1", Port: 443}}},
-				{Target: targets[1], Services: []rediver.Service{{Host: "192.0.2.2", Port: 8443}}},
+				{Target: targets[0], Items: []rediver.Service{{Host: "192.0.2.1", Port: 443}}},
+				{Target: targets[1], Items: []rediver.Service{{Host: "192.0.2.2", Port: 8443}}, ErrorMessage: rediver.Ptr("")},
+				{Target: targets[1], Items: []rediver.Service{{Host: "192.0.2.2", Port: 443}}, ErrorMessage: rediver.Ptr("probe incomplete")},
 			}},
 		},
 		{
 			name: "finding",
 			scan: func(_ context.Context, targets []rediver.Target, emit rediver.Emitter) error {
-				return emit.EmitFindings(rediver.FindingResult{Target: targets[1], Findings: []rediver.Finding{
-					{Name: "Expired certificate", Severity: rediver.SeverityMedium},
-					{Name: "Weak cipher", Severity: rediver.SeverityLow},
-				}})
+				return emit.EmitFindings(
+					rediver.Result[rediver.Finding]{Target: targets[1], Items: []rediver.Finding{
+						{Name: "Expired certificate", Severity: rediver.SeverityMedium},
+						{Name: "Weak cipher", Severity: rediver.SeverityLow},
+					}},
+					rediver.FindingResult{Target: targets[0], ErrorMessage: rediver.Ptr("")},
+					rediver.FindingResult{Target: targets[0], Items: []rediver.Finding{{Name: "Expired certificate", Severity: rediver.SeverityMedium}}, ErrorMessage: rediver.Ptr("scan incomplete")},
+				)
 			},
 			want: recordingEmitter{findings: []rediver.FindingResult{
-				{Target: targets[1], Findings: []rediver.Finding{
+				{Target: targets[1], Items: []rediver.Finding{
 					{Name: "Expired certificate", Severity: rediver.SeverityMedium},
 					{Name: "Weak cipher", Severity: rediver.SeverityLow},
 				}},
+				{Target: targets[0], ErrorMessage: rediver.Ptr("")},
+				{Target: targets[0], Items: []rediver.Finding{{Name: "Expired certificate", Severity: rediver.SeverityMedium}}, ErrorMessage: rediver.Ptr("scan incomplete")},
 			}},
 		},
 	} {

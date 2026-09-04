@@ -50,7 +50,7 @@ func TestPushPayloadLimitResetsForEachCall(t *testing.T) {
 	c := newTestClient(t, s)
 	c.requestTimeout = 5 * time.Second
 	a := preparedAssignment(t, assignmentJob(pb.Scanner_SCANNER_VULNERABILITY))
-	result := contract.FindingResult{Target: a.Targets()[0], Findings: []contract.Finding{{Name: "large evidence", Severity: contract.SeverityInfo, Description: strings.Repeat("a", 33<<20)}}}
+	result := contract.FindingResult{Target: a.Targets()[0], Items: []contract.Finding{{Name: "large evidence", Severity: contract.SeverityInfo, Description: strings.Repeat("a", 33<<20)}}}
 	for i := 0; i < 2; i++ {
 		if err := c.PushFindings(context.Background(), a, result); err != nil {
 			t.Fatalf("valid payload %d: %v", i, err)
@@ -67,7 +67,7 @@ func TestPushPayloadLimitIncludesRequestEnvelope(t *testing.T) {
 	c := newTestClient(t, s)
 	a := preparedAssignment(t, assignmentJob(pb.Scanner_SCANNER_VULNERABILITY))
 	finding := contract.Finding{Name: "record", Severity: contract.SeverityInfo, Description: strings.Repeat("a", maxEmissionBytes-32)}
-	err := c.PushFindings(context.Background(), a, contract.FindingResult{Target: a.Targets()[0], Findings: []contract.Finding{finding}})
+	err := c.PushFindings(context.Background(), a, contract.FindingResult{Target: a.Targets()[0], Items: []contract.Finding{finding}})
 	if err == nil || !strings.Contains(err.Error(), "64 MiB") || s.count("push") != 0 {
 		t.Fatalf("envelope escaped accounting: %v uploads=%d", err, s.count("push"))
 	}
@@ -86,7 +86,7 @@ func TestPushDNSOwnRecordIsOptionalAndMayRepeatAcrossCalls(t *testing.T) {
 		{{Domain: "example.com", TXT: []string{"first"}, TTL: ptr(300)}},
 		{{Domain: "EXAMPLE.COM.", TXT: []string{"second"}}},
 	} {
-		if err := c.PushDomains(context.Background(), a, contract.DNSResult{Target: a.Targets()[0], Records: records}); err != nil {
+		if err := c.PushDomains(context.Background(), a, contract.DNSResult{Target: a.Targets()[0], Items: records}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -110,9 +110,9 @@ func TestPushDNSRejectsDuplicateOwnDomainAcrossMergedWrappers(t *testing.T) {
 	for _, domain := range []string{"example.com", "EXAMPLE.COM"} {
 		target := a.Targets()[0]
 		err := c.PushDomains(context.Background(), a,
-			contract.DNSResult{Target: target, Records: []contract.DNSRecord{{Domain: domain}}},
+			contract.DNSResult{Target: target, Items: []contract.DNSRecord{{Domain: domain}}},
 			contract.DNSResult{Target: target},
-			contract.DNSResult{Target: target, Records: []contract.DNSRecord{{Domain: strings.ToUpper(domain) + "."}}},
+			contract.DNSResult{Target: target, Items: []contract.DNSRecord{{Domain: strings.ToUpper(domain) + "."}}},
 		)
 		if err == nil || !strings.Contains(err.Error(), "duplicate own-domain") || s.count("push") != 0 {
 			t.Fatalf("duplicate own domain: %v uploads=%d", err, s.count("push"))
@@ -126,7 +126,7 @@ func TestPushRetryUsesBoundedAttemptContext(t *testing.T) {
 	a := preparedAssignment(t, assignmentJob(pb.Scanner_SCANNER_SERVICE_DISCOVER))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := c.PushServices(ctx, a, contract.ServiceResult{Target: a.Targets()[0], Services: []contract.Service{{Port: 443}}})
+	err := c.PushServices(ctx, a, contract.ServiceResult{Target: a.Targets()[0], Items: []contract.Service{{Port: 443}}})
 	if !errors.Is(err, context.Canceled) || s.count("push") != 0 {
 		t.Fatalf("canceled attempt: %v uploads=%d", err, s.count("push"))
 	}
@@ -169,33 +169,33 @@ func TestPushIdempotencyKeysAndAllWrapperSnapshotsSurviveRetries(t *testing.T) {
 			targets[0].Host, targets[0].Domain, targets[0].Port, targets[0].URL = "changed", "changed", 80, "changed"
 			score := 8.1
 			domains := []contract.DNSResult{
-				{Target: targets[0], Records: []contract.DNSRecord{{Domain: "www.example.com", IPs: []string{"192.0.2.1"}, TTL: ptr(60)}}},
-				{Target: targets[1], Records: []contract.DNSRecord{{Domain: "other.example.com"}}},
+				{Target: targets[0], Items: []contract.DNSRecord{{Domain: "www.example.com", IPs: []string{"192.0.2.1"}, TTL: ptr(60)}}},
+				{Target: targets[1], Items: []contract.DNSRecord{{Domain: "other.example.com"}}},
 			}
 			services := []contract.ServiceResult{
-				{Target: targets[0], Services: []contract.Service{{Port: 443, CPEs: []string{"original"}, HTTP: &contract.HTTPData{IPs: []string{"192.0.2.1"}, Technologies: []string{"tech"}}, Certificate: &contract.Certificate{SubjectAN: []string{"example.com"}, Wildcard: ptr(false)}}}},
-				{Target: targets[1], Services: []contract.Service{{Port: 80}}},
+				{Target: targets[0], Items: []contract.Service{{Port: 443, CPEs: []string{"original"}, HTTP: &contract.HTTPData{IPs: []string{"192.0.2.1"}, Technologies: []string{"tech"}}, Certificate: &contract.Certificate{SubjectAN: []string{"example.com"}, Wildcard: ptr(false)}}}},
+				{Target: targets[1], Items: []contract.Service{{Port: 80}}},
 			}
 			findings := []contract.FindingResult{
-				{Target: targets[0], Findings: []contract.Finding{{Name: "first", Severity: contract.SeverityHigh, CVSSScore: &score, CWEs: []string{"CWE-79"}, References: []string{"https://example.com/ref"}, Requests: []contract.RawHTTPRequest{{Request: "GET / HTTP/1.1", Response: "HTTP/1.1 200 OK"}}}}},
-				{Target: targets[1], Findings: []contract.Finding{{Name: "second", Severity: contract.SeverityLow}}},
+				{Target: targets[0], Items: []contract.Finding{{Name: "first", Severity: contract.SeverityHigh, CVSSScore: &score, CWEs: []string{"CWE-79"}, References: []string{"https://example.com/ref"}, Requests: []contract.RawHTTPRequest{{Request: "GET / HTTP/1.1", Response: "HTTP/1.1 200 OK"}}}}},
+				{Target: targets[1], Items: []contract.Finding{{Name: "second", Severity: contract.SeverityLow}}},
 			}
 			mutate := func() {
-				domains[0].Records[0].IPs[0] = "changed"
-				*domains[0].Records[0].TTL = 90
-				domains[1].Records[0].Domain = "changed.example.com"
-				services[0].Services[0].Port = 8080
-				services[0].Services[0].CPEs[0] = "changed"
-				services[0].Services[0].HTTP.IPs[0] = "changed"
-				services[0].Services[0].HTTP.Technologies[0] = "changed"
-				services[0].Services[0].Certificate.SubjectAN[0] = "changed"
-				*services[0].Services[0].Certificate.Wildcard = true
-				services[1].Services[0].Port = 81
+				domains[0].Items[0].IPs[0] = "changed"
+				*domains[0].Items[0].TTL = 90
+				domains[1].Items[0].Domain = "changed.example.com"
+				services[0].Items[0].Port = 8080
+				services[0].Items[0].CPEs[0] = "changed"
+				services[0].Items[0].HTTP.IPs[0] = "changed"
+				services[0].Items[0].HTTP.Technologies[0] = "changed"
+				services[0].Items[0].Certificate.SubjectAN[0] = "changed"
+				*services[0].Items[0].Certificate.Wildcard = true
+				services[1].Items[0].Port = 81
 				score = 1
-				findings[0].Findings[0].CWEs[0] = "changed"
-				findings[0].Findings[0].References[0] = "changed"
-				findings[0].Findings[0].Requests[0].Request = "changed"
-				findings[1].Findings[0].Name = "changed"
+				findings[0].Items[0].CWEs[0] = "changed"
+				findings[0].Items[0].References[0] = "changed"
+				findings[0].Items[0].Requests[0].Request = "changed"
+				findings[1].Items[0].Name = "changed"
 			}
 			server := startClientServer(t, s)
 			transport := http.DefaultTransport.(*http.Transport).Clone()
