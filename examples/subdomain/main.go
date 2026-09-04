@@ -1,118 +1,32 @@
-// Example subdomain scanner demonstrating the Rediver SDK Agent API.
 package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"time"
+	"syscall"
 
-	"github.com/joho/godotenv"
-
-	"github.com/redivers/sdk-go"
+	rediver "github.com/redivers/sdk-go"
 )
 
+// DNSScanner implements the subdomain example's DNS lookup logic.
+type DNSScanner struct{}
+
+var _ rediver.Scanner = (*DNSScanner)(nil)
+
+func (*DNSScanner) Scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter) error {
+	return scan(ctx, targets, emitter)
+}
+
 func main() {
-	godotenv.Load()
-
-	// Create scanner with parameters and asset type declarations
-	scanner := rediver.NewScanner("subdomain",
-		[]rediver.TargetType{rediver.TargetTypeRootDomain},
-		discoverSubdomains,
-		rediver.WithDisplayName("Subdomain Discovery"),
-		rediver.WithRetestHandler(retestSubdomains),
-		rediver.WithParam(
-			rediver.StringParam("wordlist").
-				Label("Wordlist").
-				Description("Path to wordlist file").
-				Default("/usr/share/wordlists/subdomains.txt").
-				Build(),
-		),
-		rediver.WithParam(
-			rediver.IntParam("threads").
-				Label("Threads").
-				Description("Number of concurrent threads").
-				Default(10).
-				Build(),
-		),
-	)
-
-	// Create agent (worker mode: polls for jobs continuously until interrupted)
-	agent, err := rediver.NewAgent(os.Getenv("REDIVER_TOKEN"), scanner)
+	agent, err := rediver.NewAgent(os.Getenv("REDIVER_TOKEN"), &DNSScanner{})
 	if err != nil {
-		log.Fatalf("create agent: %v", err)
+		log.Fatal(err)
 	}
-
-	// Setup context with signal handling
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-
-	// Run agent in worker mode
 	if err := agent.Run(ctx); err != nil {
-		log.Fatalf("run: %v", err)
+		log.Fatal(err)
 	}
-
-	log.Println("task complete, token revoked")
-}
-
-func discoverSubdomains(ctx context.Context, job rediver.Job, emit func(rediver.Result)) error {
-	logger := job.Logger()
-	wordlist := job.Param("wordlist").StringOr("/usr/share/wordlists/subdomains.txt")
-	threads := job.Param("threads").IntOr(10)
-
-	logger.Info("starting discovery", "wordlist", wordlist, "threads", threads)
-
-	var domains []rediver.Domain
-	for _, target := range job.Domains() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		for i := 0; i < 5; i++ {
-			subdomain := fmt.Sprintf("sub%d.%s", i, target.Value)
-			domains = append(domains, rediver.Domain{
-				Domain: subdomain,
-			})
-		}
-
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	emit(rediver.Domains(domains...))
-	return nil
-}
-
-func retestSubdomains(ctx context.Context, job rediver.Job, emit func(rediver.Result)) error {
-	logger := job.Logger()
-	domains := job.Domains()
-	logger.Info("starting recheck", "domains_count", len(domains))
-
-	var active []rediver.Domain
-	for _, domain := range domains {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		if domain.Value == "" {
-			continue
-		}
-
-		isResolved := true
-		if isResolved {
-			active = append(active, rediver.Domain{
-				Domain: domain.Value,
-			})
-		}
-
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	emit(rediver.Domains(active...))
-	return nil
 }

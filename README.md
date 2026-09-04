@@ -1,509 +1,286 @@
-# Rediver SDK
+# Rediver Go SDK
 
-Go SDK for building security scanners that integrate with the Rediver Attack Surface Management platform.
+Implement one `Scanner` interface: receive a **batch of targets** and emit typed
+SDK result sets. The SDK handles registration, polling, target assignment,
+uploads, heartbeats, retries and job completion. The NetworkAgent token determines
+the scanner type on the backend; scanner code does not select an enum or a
+scanner-specific constructor.
 
-## Installation
+Scanner projects use one import, `github.com/redivers/sdk-go`, for the agent,
+native inputs, results and configuration. Backend protocol types stay internal.
 
-```bash
+This breaking update uses the `networkscan` contract from the backend's
+`network-scan` implementation.
+
+```sh
 go get github.com/redivers/sdk-go
 ```
 
-## Quick Start
+Use a revision containing this migration. The module path remains
+`github.com/redivers/sdk-go`; this change does not publish a release.
+Deploy the backend realtime migration and implementation before upgrading scanners.
+
+## Quick start
 
 ```go
 package main
 
 import (
     "context"
-    "fmt"
+    "errors"
     "log"
+    "net"
     "os"
     "os/signal"
 
-    "github.com/redivers/sdk-go"
+    rediver "github.com/redivers/sdk-go"
 )
 
-func main() {
-    scanner := rediver.NewScanner("my_scanner",
-        []rediver.TargetType{rediver.TargetTypeDomain},
-        scanHandler,
-        rediver.WithParam(
-            rediver.IntParam("threads").
-                Label("Threads").
-                Description("Number of concurrent threads").
-                Default(10).
-                Build(),
-        ),
-    )
+func scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter) error {
+    for _, target := range targets {
+        ips, err := net.DefaultResolver.LookupHost(ctx, target.Domain)
+        if err != nil {
+            var dnsErr *net.DNSError
+            if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+                continue
+            }
+            return err
+        }
+        if err := emitter.EmitDomains(rediver.DNSResult{
+            Target: target,
+            Records: []rediver.DNSRecord{{Domain: target.Domain, IPs: ips}},
+        }); err != nil {
+            return err
+        }
+    }
+    return nil
+}
 
-    agent, err := rediver.NewAgent(
-        os.Getenv("REDIVER_TOKEN"),
-        scanner,
-        rediver.WithMaxConcurrency(1),
-    )
+func main() {
+    agent, err := rediver.NewAgent(os.Getenv("REDIVER_TOKEN"), rediver.ScanFunc(scan))
     if err != nil {
         log.Fatal(err)
     }
-
     ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
     defer cancel()
-
     if err := agent.Run(ctx); err != nil {
         log.Fatal(err)
     }
 }
+```
 
-func scanHandler(ctx context.Context, job rediver.Job, emit func(rediver.Result)) error {
-    threads := job.Param("threads").IntOr(10)
-    fmt.Printf("Scanning with %d threads\n", threads)
+Use a token configured for subdomain scanning to run this DNS example. Set
+`REDIVER_URL` to your backend origin, for example `http://localhost:5152`.
+The default is `https://api.rediver.ai`.
 
-    for _, target := range job.Domains() {
-        select {
-        case <-ctx.Done():
-            return ctx.Err()
-        default:
-        }
+## One scanner interface
 
-        emit(rediver.Domains(rediver.Domain{
-            Domain: "sub." + target.Value,
-            A:      []string{"1.2.3.4"},
-        }))
-    }
-    return nil
+```go
+type Scanner interface {
+    Scan(context.Context, []Target, Emitter) error
+}
+
+type Emitter interface {
+    EmitDomains(...DNSResult) error
+    EmitServices(...ServiceResult) error
+    EmitFindings(...FindingResult) error
 }
 ```
 
-## Architecture Overview
+The SDK calls `Scan` once with **all unfinished targets in one assigned job**.
+This is a batch supplied by the backend, not the entire global scan queue. Pass
+the list to a bulk engine in one invocation, or schedule individual targets
+inside your scanner. The SDK does not force one engine invocation per target.
 
-```
-┌────────────────────────────────────────────────┐
-│                Your Scanner Binary              │
-│                                                 │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────┐  │
-│  │ Scanner 1│  │ Scanner 2│  │  Scanner N   │  │
-│  │(handler) │  │(handler) │  │  (handler)   │  │
-│  └────┬─────┘  └────┬─────┘  └──────┬───────┘  │
-│       └──────────────┼───────────────┘          │
-│              ┌───────┴───────┐                  │
-│              │     Agent     │                  │
-│              │ (lifecycle,   │                  │
-│              │  heartbeats,  │                  │
-│              │  job dispatch)│                  │
-│              └───────┬───────┘                  │
-└──────────────────────┼──────────────────────────┘
-                       │ HTTP API
-               ┌───────┴───────┐
-               │ Rediver Server│
-               └───────────────┘
-```
-
-**Agent** manages the lifecycle: authentication, job polling, heartbeats, result import, and graceful shutdown. **Scanners** implement your scanning logic and emit results back to the platform.
-
-## Run Modes
-
-The SDK supports three lifecycle methods, each suited for different deployment strategies:
-
-| Method | Use case | Lifecycle |
-|--------|----------|-----------|
-| `Run(ctx)` | Long-running agent (VM, bare-metal) | Token gen → poll loop → heartbeats → graceful shutdown |
-| `RunOnce(ctx, jobID...)` | Orchestrated containers (K8s Job) | Connect → pull 1 job → execute → revoke token → exit |
-| `RunCI(ctx)` | CI/CD pipelines (GitLab CI, GitHub Actions) | Detect env → create job → scan local repo → report → exit |
-
-### Worker Mode (`Run`)
-
-Long-running agent that continuously polls for jobs. Ideal for persistent deployments.
+Implement the interface on your own type to keep engine configuration and
+resources together:
 
 ```go
-// Long-running poll loop — blocks until context cancelled.
-// Pass scanner directly; one Agent per scanner.
-agent, _ := rediver.NewAgent(token, scanner,
-    rediver.WithMaxConcurrency(5),             // parallel jobs (default: 1)
-    rediver.WithPollInterval(30*time.Second),  // poll frequency (default: 5s)
-    rediver.WithShutdownTimeout(2*time.Minute), // graceful shutdown window
-    rediver.WithAgentIDPath("/data/agent-id"), // persist agent ID across restarts
-)
+type DNSScanner struct{}
 
-agent.Run(ctx) // blocks until context cancelled
-```
+var _ rediver.Scanner = (*DNSScanner)(nil)
 
-### Task Mode (`RunOnce`)
-
-Single-job execution for container orchestration. Pulls one job, executes, revokes token, and exits.
-
-```go
-agent, _ := rediver.NewAgent(token, scanner)
-agent.RunOnce(ctx) // pull one job, execute, exit
-```
-
-**Direct job execution** — skip polling and run a specific job by ID:
-
-```go
-agent.RunOnce(ctx, "job-uuid")
-```
-
-### CI Mode (`RunCI`)
-
-Auto-detects CI environment (GitLab CI, GitHub Actions), creates a job on the server, scans the locally checked-out repository, and exits.
-
-```go
-scanner := rediver.NewScanner("semgrep",
-    []rediver.TargetType{rediver.TargetTypeRepository},
-    semgrepHandler,
-)
-
-agent, _ := rediver.NewAgent(token, scanner)
-agent.RunCI(ctx)
-```
-
-**GitLab CI integration:**
-
-```yaml
-sast_scan:
-  image: your-scanner-image:latest
-  script:
-    - ci-scanner
-  variables:
-    REDIVER_URL: https://rediver.example.com
-    REDIVER_TOKEN: $CLUSTER_TOKEN
-```
-
-**GitHub Actions integration:**
-
-```yaml
-- name: SAST Scan
-  run: ci-scanner
-  env:
-    REDIVER_URL: https://rediver.example.com
-    REDIVER_TOKEN: ${{ secrets.CLUSTER_TOKEN }}
-```
-
-## Scanner
-
-A scanner defines what your tool does, what target types it accepts, and its configurable parameters.
-
-```go
-scanner := rediver.NewScanner("scanner_name",
-    []rediver.TargetType{rediver.TargetTypeDomain, rediver.TargetTypeIP},
-    discoverHandler,
-    rediver.WithDisplayName("My Scanner"),
-    rediver.WithRetestHandler(retestHandler),    // optional retest logic
-    rediver.WithParam(
-        rediver.StringParam("wordlist").
-            Label("Wordlist").
-            Description("Path to wordlist file").
-            Default("/usr/share/wordlists/default.txt").
-            Build(),
-    ),
-)
-```
-
-### Handler Function
-
-Every scanner needs a handler function with this signature:
-
-```go
-func handler(ctx context.Context, job rediver.Job, emit func(rediver.Result)) error
-```
-
-- `ctx` — cancelled on shutdown or job timeout
-- `job` — targets, parameters, and metadata from Rediver
-- `emit` — call to send results back to the platform (can be called multiple times)
-
-### Target Types
-
-Declare which asset types your scanner can process:
-
-| Constant | Description |
-|----------|-------------|
-| `TargetTypeDomain` | Subdomains (e.g., `api.example.com`) |
-| `TargetTypeRootDomain` | Root domains (e.g., `example.com`) |
-| `TargetTypeIP` | IP addresses |
-| `TargetTypeSubnet` | CIDR subnets |
-| `TargetTypeService` | Host:port services |
-| `TargetTypeRepository` | Git repositories (CI mode) |
-| `TargetTypeASN` | ASN numbers |
-
-### Retest Handler
-
-Optional handler for re-validating existing assets. If not provided, retest jobs complete silently.
-
-```go
-rediver.WithRetestHandler(func(ctx context.Context, job rediver.Job, emit func(rediver.Result)) error {
-    // Re-check existing assets from job.Domains(), job.Services(), etc.
-    // Emit only assets that are still valid
-    return nil
-})
-```
-
-## Job
-
-Jobs contain targets and parameters dispatched from Rediver.
-
-### Accessing Targets
-
-The main handler only receives **discovery** jobs. Retest jobs are routed to the retest handler (see [Retest Handler](#retest-handler)).
-
-```go
-// Discovery handler — receives new targets to scan
-func discoverHandler(ctx context.Context, job rediver.Job, emit func(rediver.Result)) error {
-    for _, domain := range job.Domains() {
-        // domain.Value is the target to scan
-    }
-
-    // Other target accessors
-    for _, ip := range job.IPs() { /* ip.Value */ }
-    for _, subnet := range job.Subnets() { /* subnet.Value (CIDR) */ }
-    for _, svc := range job.Services() { /* svc.Host, svc.Port, svc.URL */ }
-
-    return nil
+func (*DNSScanner) Scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter) error {
+    return scan(ctx, targets, emitter)
 }
 
-// Retest handler — receives existing assets to re-validate
-func retestHandler(ctx context.Context, job rediver.Job, emit func(rediver.Result)) error {
-    for _, domain := range job.Domains() {
-        // domain.ID — existing asset ID in Rediver
-        // domain.Value, domain.CNAME, domain.IPs — current known values
-        // Re-resolve and emit only assets that are still valid
-    }
-    return nil
+func newDNSAgent(token string) (*rediver.Agent, error) {
+    return rediver.NewAgent(token, &DNSScanner{})
 }
 ```
 
-### Accessing Parameters
+This example reuses `scan` from the quick start. A plain function uses
+`rediver.ScanFunc(scan)` instead. Both forms share the same runtime and require no
+job IDs, run IDs, scanner enum, or reporter.
 
-Parameters are type-safe with fallback values:
+`Target` contains ordinary Go fields populated for the assignment:
+
+| Scan input | Fields used by the scanning logic |
+|---|---|
+| Domain | `Domain string` |
+| Service discovery | `Host string`, `Ports []int`, `Rate int` |
+| Vulnerability | `Host string`, `Port int`, `URL string` when available |
+
+Service discovery receives validated, sorted, unique ports. `Rate` is one probe
+budget for the **whole job batch**, repeated on its targets. Pass it once to your
+bulk engine or share one limiter across workers; do not allocate that full budget
+to every target. See [serviceprobe](examples/serviceprobe). The SDK cannot meter
+requests made inside an external scanning engine.
+
+Each input also carries a private SDK reference. Set each result set's `Target`
+to the original input or a copy of it; keep it alongside each engine input when
+correlating results. Constructing a new `Target` from a hostname loses the
+assignment reference. The SDK retains the original backend target, including
+optional field presence, so scan code never constructs transport identifiers.
+
+## Emit observations
+
+Use the method matching the scanner kind configured in your token. Each result
+set pairs one assigned target with a slice of native observations:
+
+| Method | Result set |
+|---|---|
+| `EmitDomains` | `DNSResult{Target: target, Records: []DNSRecord{...}}` |
+| `EmitServices` | `ServiceResult{Target: target, Services: []Service{...}}` |
+| `EmitFindings` | `FindingResult{Target: target, Findings: []Finding{...}}` |
+
+Emit one result set as soon as its observations are available:
 
 ```go
-threads := job.Param("threads").IntOr(10)
-wordlist := job.Param("wordlist").StringOr("/default.txt")
-enabled := job.Param("enabled").BoolOr(true)
-tags := job.Param("tags").StringsOr([]string{"default"})
-
-// Check if a parameter was set
-if job.Param("custom").IsSet() {
-    value := job.Param("custom").String()
+oneResult := rediver.FindingResult{
+    Target: target,
+    Findings: []rediver.Finding{{
+        Name: "Observed vulnerability",
+        Severity: rediver.SeverityHigh,
+        RuleID: "my-rule",
+    }},
+}
+if err := emitter.EmitFindings(oneResult); err != nil {
+    return err
 }
 ```
 
-### Repository Access (CI/SAST)
-
-For repository-targeted scanners:
+An engine can also return a list spanning multiple assigned targets. For example,
+with findings already collected for two targets:
 
 ```go
-func handler(ctx context.Context, job rediver.Job, emit func(rediver.Result)) error {
-    // Get local repo path (CI mode uses existing checkout, others clone)
-    repoDir, err := job.PrepareRepository(ctx)
-    if err != nil {
-        return err
-    }
-
-    // Get changed files for PR/MR scans
-    changed, err := job.ChangedFiles(ctx, repoDir)
-    if err != nil {
-        return err
-    }
-    // changed.Added, changed.Modified, changed.Deleted
-
-    // Scan files and emit findings...
-    return nil
+results := []rediver.FindingResult{
+    {Target: targets[0], Findings: firstTargetFindings},
+    {Target: targets[1], Findings: secondTargetFindings},
 }
+return emitter.EmitFindings(results...)
 ```
 
-## Results
+Each inner `Findings` slice may contain multiple findings for its target. The same
+single-result and batch forms work with `EmitDomains` and `EmitServices`; see the
+[runnable examples](#examples-and-development).
 
-Emit results to import discovered assets and findings into Rediver.
+All three methods belong to one `Emitter`. Calling a method incompatible with the
+assigned job returns an error, even with zero arguments. Unknown payload types
+cannot be passed to these typed methods. For the matching method, zero arguments
+or an expanded nil/empty result slice is a valid no-op. A result set with no inner
+observations is also a no-op, but its `Target` must still belong to the assignment.
+Return emission errors from your scanner; the SDK remembers them so ignoring one
+cannot silently complete the batch.
 
-### Domains
+`Emitter` supports concurrent calls and snapshots accepted observations before
+returning. Finish all your goroutines before `Scan` returns and honor `ctx`.
+The emitter closes when scanning finishes; late emissions fail.
 
-```go
-emit(rediver.Domains(
-    rediver.Domain{Domain: "api.example.com", A: []string{"1.2.3.4"}},
-    rediver.Domain{Domain: "www.example.com", CNAME: "cdn.example.com"},
-))
+**Each `Emit*` call with observations uploads immediately and waits for backend acknowledgement.** You
+can emit several chunks for the same target while scanning continues. Calls are
+serialized within a job to provide backpressure. Each call accepts at most
+100,000 observations and 64 MiB of encoded payload; there is no cumulative job
+result limit. Split larger output across calls. These limits exclude Go object
+overhead.
+
+| Scanner outcome | Meaning |
+|---|---|
+| `Emit*` returns `nil` | Backend acknowledged this chunk, or the call was an empty no-op. |
+| `Scan` returns `nil` | Finish every assigned target and complete the job. |
+| No emissions for a target, with successful `Scan` | Finish that target with no observations. |
+| `Scan` errors, panics, or is canceled | Report failure; already accepted observations remain stored. |
+| An emit error occurs | Fail the job even if the scanner ignores it and returns `nil`. |
+
+DNS records may describe the assigned domain or strict descendants; direct
+subdomain targets may only report themselves. The own-domain record is optional.
+The SDK never fabricates DNS metadata. Successful DNS completion still lets the
+backend schedule the assigned hostname for the next enabled stage. Each emitted
+DNS/service observation is a complete record: later observations replace its
+scanner-owned metadata. For services, an empty `Host` uses the assigned host.
+
+The SDK gives each push a fresh idempotency key and reuses it on transport retries
+within the current job run. A lost acknowledgement therefore does not repeat that
+push's projection. A later `Emit*` call is a new push, even with identical data.
+If a job attempt fails, backend may scan its unfinished targets again; accepted
+partial results remain available. Return emission errors promptly and honor
+cancellation.
+
+Result models use plain strings and integers for ordinary fields. Optional values
+that need explicit presence use pointers, such as `DNSRecord.TTL`,
+`Finding.CVSSScore`, and `Certificate.Wildcard`; `rediver.Ptr(value)` is available.
+Certificate validity dates use `time.Time`. See the
+[model definitions](internal/contract/models.go) for all fields; the root SDK
+exposes these same types through aliases. Findings require a name and one of
+`SeverityInfo`, `SeverityLow`, `SeverityMedium`, `SeverityHigh`, or
+`SeverityCritical`. Include both raw request
+and response when adding `RawHTTPRequest` evidence.
+
+## Run the agent
+
+`agent.Run(ctx)` polls continuously. `agent.RunOnce(ctx)` polls and handles one
+job, returning `ErrNoJobAvailable` if none is available. An Agent supports one
+lifecycle invocation; create another Agent to run it again.
+
+`WithMaxConcurrency(n)` controls concurrent **jobs**, each with its own batch and
+rate budget. The default is one. Your scanner controls concurrency within each
+batch and must support concurrent `Scan` calls when job concurrency exceeds one.
+
+On cancellation, `Run` stops polling and lets active jobs drain until the shutdown
+timeout. `Stop()` cancels polling and active work immediately. The SDK maintains
+heartbeats during scanning and uploads, including the drain period. `Run` logs
+individual job errors and continues; authentication or malformed-assignment
+errors stop the agent. `RunOnce` returns execution errors to the caller.
+
+| Option | Purpose |
+|---|---|
+| `WithServerURL(url)` | Override the backend origin. |
+| `WithMaxConcurrency(n)` | Bound concurrent jobs; default 1. |
+| `WithPollInterval(d)` | Delay between empty or failed polls; default 5 seconds. |
+| `WithRequestTimeout(d)` | Bound RPCs; default 60 seconds. Allow headroom above backend long polling, which defaults to 30 seconds. |
+| `WithShutdownTimeout(d)` | Grace period for active jobs; default 30 seconds. Bounded terminal cleanup may follow. |
+| `WithLogger(logger)` | Use a `*slog.Logger`. |
+| `WithRetryDefault()`, `WithRetryAggressive()`, `WithNoRetry()` | Choose a retry preset. |
+
+See [options.go](options.go) for heartbeat intervals, runner metadata, custom HTTP
+clients and retry policies. Claiming polls and terminal callbacks are not
+transparently retried, because a lost response may already have changed backend
+state. Transient polling failures resume in the next `Run` polling cycle.
+
+Use `errors.Is` with `ErrNoJobAvailable`, `ErrInvalidConfig`, `ErrInvalidJob` or
+`ErrAlreadyRunning` for SDK control flow. Wrapped failures preserve diagnostic
+context and underlying causes.
+
+The SDK uses the published Buf Connect and protobuf modules. See
+[go.mod](go.mod) for dependency versions.
+
+## Examples and development
+
+- [subdomain](examples/subdomain): a custom `Scanner` implementation for DNS.
+- [serviceprobe](examples/serviceprobe): batch TCP probes sharing one rate limiter.
+- [vulnscan](examples/vulnscan): emit a list of expired-certificate result sets across targets.
+- [task](examples/task): one polled job using `ScanFunc`.
+
+Use `snake_case` for Go filenames. Group tests by their implementation file:
+`file.go` pairs with `file_test.go`. Keep scenario tests and shared test helpers
+in the matching implementation's test file.
+
+```sh
+go build ./...
+go vet ./...
+go test -race ./...
 ```
-
-### Services
-
-```go
-emit(rediver.Services(
-    rediver.Service{
-        Host: "example.com", Port: 443, ServiceName: "https",
-        Certificate: &rediver.TLSInfo{
-            SubjectCN: "example.com",
-            IssuerOrg: "Let's Encrypt",
-            NotAfter:  "2025-06-01T00:00:00Z",
-        },
-        HTTP: &rediver.HTTPInfo{
-            URL:          "https://example.com",
-            StatusCode:   200,
-            Title:        "Example Site",
-            Webserver:    "nginx/1.24.0",
-            Technologies: []string{"React", "Node.js"},
-        },
-    },
-))
-```
-
-### Web Findings
-
-```go
-emit(rediver.WebFindings(
-    rediver.WebFinding{
-        Name:      "SQL Injection",
-        Severity:  rediver.SeverityCritical,
-        Endpoint:  "https://example.com/api/login",
-        Category:  "injection",
-        RuleID:    "sqli-001",
-        CWEs:      []string{"CWE-89"},
-        CVSSScore: 9.8,
-        Requests: []rediver.HTTPRequest{
-            {
-                RawRequest:  "POST /api/login HTTP/1.1\nHost: example.com\n\n{\"user\":\"admin' OR '1'='1\"}",
-                RawResponse: "HTTP/1.1 200 OK\n\n{\"success\":true}",
-            },
-        },
-        Remediation: "Use parameterized queries.",
-    },
-))
-```
-
-### SAST Findings
-
-```go
-emit(rediver.SASTFindings(
-    rediver.SASTFinding{
-        Name:        "Hardcoded Secret",
-        Severity:    rediver.SeverityHigh,
-        File:        "config/settings.py",
-        StartLine:   42,
-        EndLine:     42,
-        Snippet:     "API_KEY = 'sk-...'",
-        Category:    "secret",
-        RuleID:      "hardcoded-secret-001",
-        CWEs:        []string{"CWE-798"},
-        CVSSScore:   7.5,
-        Remediation: "Use environment variables or a secrets manager.",
-    },
-))
-```
-
-### Severity Levels
-
-`SeverityCritical` | `SeverityHigh` | `SeverityMedium` | `SeverityLow` | `SeverityInfo` | `SeverityNone`
-
-## Parameters
-
-Fluent builder API for declaring scanner parameters visible in the Rediver UI:
-
-```go
-// String
-rediver.StringParam("wordlist").
-    Label("Wordlist").
-    Description("Path to wordlist file").
-    Required().
-    Default("/usr/share/wordlists/default.txt").
-    Env("SCANNER_WORDLIST"). // CI mode: resolve from env var
-    Build()
-
-// Integer
-rediver.IntParam("threads").Label("Threads").Default(10).Build()
-
-// Boolean
-rediver.BoolParam("aggressive").Label("Aggressive Mode").Default(false).Build()
-
-// Float
-rediver.FloatParam("threshold").Label("Score Threshold").Default(0.5).Build()
-
-// Arrays
-rediver.StringArrayParam("tags").Label("Tags").Build()
-rediver.IntArrayParam("ports").Label("Ports").Build()
-```
-
-**CI mode parameter resolution order:** environment variable (`.Env()`) > CI context parameters > default value.
-
-## Agent Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `WithServerURL(url)` | `https://api.rediver.ai` | Override API server URL (also: `REDIVER_URL` env) |
-| `WithMaxConcurrency(n)` | 1 | Max concurrent jobs (`Run` poll loop) |
-| `WithPollInterval(d)` | 5s | Job poll interval (`Run`, min 1s) |
-| `WithShutdownTimeout(d)` | 0 (wait forever) | Graceful shutdown window |
-| `WithAgentIDPath(path)` | `~/.rediver/agent-id` | Persist agent ID across restarts |
-| `WithAgentID(id)` | — | Force specific agent ID |
-| `WithVersion(v)` | — | Agent version string |
-| `WithHostname(h)` | — | Override hostname |
-| `WithLogger(logger)` | — | Custom logger (Debug/Info/Warn/Error) |
-| `WithRetryDefault()` | — | 5 attempts, exponential backoff |
-| `WithRetryAggressive()` | — | 10 attempts, longer backoff |
-| `WithNoRetry()` | — | Disable retries |
-| `WithHTTPClient(c)` | — | Custom HTTP client |
-
-## Utilities
-
-```go
-import "github.com/redivers/sdk-go/utils"
-
-// Execute external commands
-output, err := utils.Exec(ctx, "nmap", "-sV", target)
-
-// Git operations
-repo, err := utils.GitClone(ctx, repoURL, destPath)
-diff, err := utils.GitDiff(ctx, repoPath, "HEAD~1", "HEAD")
-
-// Machine info
-info := utils.GetMachineInfo()
-machineID, err := utils.GetMachineID()
-```
-
-## Error Handling
-
-The SDK provides typed errors for control flow:
-
-```go
-import "errors"
-
-if err := agent.Run(ctx); err != nil {
-    var apiErr *rediver.APIError
-    if errors.As(err, &apiErr) {
-        log.Printf("API error %d: %s", apiErr.StatusCode, apiErr.Message)
-    }
-
-    if errors.Is(err, rediver.ErrAuthFailed) {
-        log.Fatal("invalid token")
-    }
-    if errors.Is(err, rediver.ErrNoJobAvailable) {
-        log.Println("no jobs in queue")
-    }
-}
-```
-
-**Sentinel errors:** `ErrJobNotFound`, `ErrJobCancelled`, `ErrInvalidJob`, `ErrNoJobAvailable`, `ErrConnectionLost`, `ErrAuthFailed`, `ErrRateLimited`, `ErrMaxRetries`, `ErrInvalidConfig`, `ErrReregistered`
-
-## Examples
-
-Complete working examples in the [examples/](examples/) directory:
-
-| Example | Mode | Description |
-|---------|------|-------------|
-| [subdomain](examples/subdomain/) | Worker | Subdomain enumeration with retest support |
-| [serviceprobe](examples/serviceprobe/) | Worker | Service/port scanning with TLS and HTTP info |
-| [vulnscan](examples/vulnscan/) | Worker | Web vulnerability scanner with finding reporting |
-| [task](examples/task/) | Task | Single-job execution for container orchestration |
-| [direct-job](examples/direct-job/) | Task | Execute a specific job by ID |
-| [ci-scanner](examples/ci-scanner/) | CI | SAST scanning in GitLab CI / GitHub Actions |
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `REDIVER_URL` | Rediver server URL (default: `https://api.rediver.ai`) |
-| `REDIVER_TOKEN` | Agent cluster token |
-
-## API Client
-
-The SDK communicates with the Rediver server using the [Connect protocol](https://connectrpc.com) (HTTP/1.1 and HTTP/2 compatible gRPC alternative). Service clients are generated from the Rediver proto definitions published on the [Buf Schema Registry](https://buf.build/rediver/api) and are consumed as Go module dependencies — no local code generation is required.
 
 ## License
 
-Proprietary - Calif Engineering
+Proprietary — Calif Engineering

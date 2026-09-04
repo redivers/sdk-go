@@ -1,39 +1,47 @@
-// Example task mode agent demonstrating single-job execution with auto token revocation.
 package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
+	"net"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/joho/godotenv"
-
-	"github.com/redivers/sdk-go"
+	rediver "github.com/redivers/sdk-go"
 )
 
-func main() {
-	godotenv.Load()
+func scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter) error {
+	for _, target := range targets {
+		ips, err := net.DefaultResolver.LookupHost(ctx, target.Domain)
+		if err != nil {
+			var dnsErr *net.DNSError
+			if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+				continue
+			}
+			return fmt.Errorf("resolve %s: %w", target.Domain, err)
+		}
+		if err := emitter.EmitDomains(rediver.DNSResult{
+			Target:  target,
+			Records: []rediver.DNSRecord{{Domain: target.Domain, IPs: ips}},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	agent, err := rediver.NewAgent(os.Getenv("REDIVER_TOKEN"),
-		rediver.NewScanner("nuclei",
-			[]rediver.TargetType{rediver.TargetTypeDomain, rediver.TargetTypeService},
-			nucleiHandler,
-		),
-	)
+func main() {
+	scanner := rediver.ScanFunc(scan)
+	agent, err := rediver.NewAgent(os.Getenv("REDIVER_TOKEN"), scanner)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	// RunOnce: poll once -> execute -> revoke token -> exit
-	if err := agent.RunOnce(context.Background()); err != nil {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	if err := agent.RunOnce(ctx); err != nil && !errors.Is(err, rediver.ErrNoJobAvailable) {
 		log.Fatal(err)
 	}
-	log.Println("task complete, token revoked")
-}
-
-func nucleiHandler(ctx context.Context, job rediver.Job, emit func(rediver.Result)) error {
-	logger := job.Logger()
-	logger.Info("scanning services", "count", len(job.Services()))
-	// ... nuclei scan logic ...
-	return nil
 }

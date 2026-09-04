@@ -1,142 +1,65 @@
-// Example service probe scanner demonstrating service discovery with the Rediver SDK.
-// Runs in worker mode: polls for jobs continuously until interrupted.
 package main
 
 import (
 	"context"
-	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
+	"strconv"
+	"syscall"
 	"time"
 
-	"github.com/joho/godotenv"
-
-	"github.com/redivers/sdk-go"
+	rediver "github.com/redivers/sdk-go"
 )
 
 func main() {
-	godotenv.Load()
-
-	scanner := rediver.NewScanner("service_probe",
-		[]rediver.TargetType{rediver.TargetTypeDomain, rediver.TargetTypeIP, rediver.TargetTypeService},
-		discoverServices,
-		rediver.WithRetestHandler(retestServices),
-		rediver.WithParam(
-			rediver.StringParam("ports").
-				Label("Ports").
-				Description("Ports to scan (e.g., '80,443,8080' or '1-1000')").
-				Default("80,443,8080,8443").
-				Build(),
-		),
-		rediver.WithParam(
-			rediver.IntParam("timeout").
-				Label("Timeout").
-				Description("Connection timeout in seconds").
-				Default(5).
-				Build(),
-		),
-		rediver.WithParam(
-			rediver.BoolParam("grab_banners").
-				Label("Grab Banners").
-				Description("Attempt to grab service banners").
-				Default(true).
-				Build(),
-		),
-	)
-
-	agent, err := rediver.NewAgent(os.Getenv("REDIVER_TOKEN"), scanner)
+	agent, err := rediver.NewAgent(os.Getenv("REDIVER_TOKEN"),
+		rediver.ScanFunc(scan))
 	if err != nil {
-		log.Fatalf("create agent: %v", err)
+		log.Fatal(err)
 	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-
 	if err := agent.Run(ctx); err != nil {
-		log.Fatalf("run: %v", err)
+		log.Fatal(err)
 	}
-
-	log.Println("task complete, token revoked")
 }
 
-func discoverServices(ctx context.Context, job rediver.Job, emit func(rediver.Result)) error {
-	logger := job.Logger()
-	ports := job.Param("ports").StringOr("80,443,8080,8443")
-	timeout := job.Param("timeout").IntOr(5)
-	grabBanners := job.Param("grab_banners").BoolOr(true)
-
-	logger.Info("starting service probe", "ports", ports, "timeout", timeout, "banners", grabBanners)
-	var services []rediver.Service
-	for _, target := range job.Domains() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		host := target.Value
-		services = append(services,
-			rediver.Service{
-				Host: host, Port: 80, ServiceName: "http",
-				HTTP: &rediver.HTTPInfo{
-					URL: fmt.Sprintf("http://%s", host), Scheme: "http",
-					StatusCode: 200, Title: "Welcome Page", Webserver: "nginx/1.24.0",
-				},
-			},
-			rediver.Service{
-				Host: host, Port: 443, ServiceName: "https",
-				Certificate: &rediver.TLSInfo{
-					SubjectCN: host, IssuerCN: "Let's Encrypt Authority X3",
-					IssuerOrg: "Let's Encrypt", NotBefore: "2024-01-01T00:00:00Z",
-					NotAfter: "2024-04-01T00:00:00Z",
-				},
-				HTTP: &rediver.HTTPInfo{
-					URL: fmt.Sprintf("https://%s", host), Scheme: "https",
-					StatusCode: 200, Title: "Secure Page", Webserver: "nginx/1.24.0",
-					Technologies: []string{"React", "Node.js"},
-				},
-			},
-			rediver.Service{
-				Host: host, Port: 22, ServiceName: "ssh",
-				CPEs: []string{"cpe:/a:openbsd:openssh:8.9"},
-			},
-		)
-
-		time.Sleep(100 * time.Millisecond)
+func scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter) error {
+	if len(targets) == 0 {
+		return nil
 	}
-
-	logger.Info("probe complete", "services_found", len(services))
-	emit(rediver.Services(services...))
-	return nil
-}
-
-func retestServices(ctx context.Context, job rediver.Job, emit func(rediver.Result)) error {
-	logger := job.Logger()
-	services := job.Services()
-	logger.Info("starting recheck", "services_count", len(services))
-
-	var active []rediver.Service
-	for _, svc := range services {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		result := rediver.Service{Host: svc.Host, Port: svc.Port}
-
-		if svc.URL != "" {
-			result.ServiceName = "https"
-			result.HTTP = &rediver.HTTPInfo{
-				URL: svc.URL, StatusCode: 200,
+	// The SDK validates and expands the assigned ports. Rate is the budget for
+	// the whole batch, so every target shares this limiter. A bulk engine can
+	// instead receive all targets and the batch rate in one invocation.
+	interval := max(time.Nanosecond, time.Second/time.Duration(targets[0].Rate))
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	dialer := net.Dialer{Timeout: 2 * time.Second}
+	for _, target := range targets {
+		for _, port := range target.Ports {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-ticker.C:
+			}
+			conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(target.Host, strconv.Itoa(port)))
+			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				continue
+			}
+			conn.Close()
+			// Host defaults to the assigned target's host when omitted.
+			if err := emitter.EmitServices(rediver.ServiceResult{
+				Target:   target,
+				Services: []rediver.Service{{Port: port, Transport: "tcp"}},
+			}); err != nil {
+				return err
 			}
 		}
-
-		active = append(active, result)
-		time.Sleep(50 * time.Millisecond)
 	}
-
-	emit(rediver.Services(active...))
 	return nil
 }

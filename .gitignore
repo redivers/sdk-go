@@ -1,6 +1,4 @@
 .env
-docs
-plans
 **/CLAUDE.md
 !CLAUDE.md
 .idea
@@ -26,3 +24,5 @@ plans
 /task
 /vulnscan
 .worktrees/
+/plans/
+/docs/
