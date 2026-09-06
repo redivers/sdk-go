@@ -297,27 +297,47 @@ func TestAgentServiceTargetPreparationFailsAfterStart(t *testing.T) {
 	}
 }
 
-func TestAgentSuccessfulEmptyScanCompletesWithoutPushes(t *testing.T) {
+func TestAgentEmptyServiceResultsArePushedBeforeCompletion(t *testing.T) {
 	job := agentTestJob()
 	job.Targets = append(job.Targets, &pb.JobTarget{AssetScanId: ptr("asset-second"), Host: ptr("second.example.com")})
-	s := &agentServer{job: job}
-	a := newAgentTest(t, s, func(context.Context, []contract.Target, contract.Emitter) error { return nil })
+	s := &agentServer{job: job, push: func(_ context.Context, req *pb.PushServicesRequest) (*pb.PushServicesResponse, error) {
+		if len(req.Results) != 2 {
+			t.Fatalf("empty service results = %v; want one entry per target", req.Results)
+		}
+		for i, result := range req.Results {
+			if !proto.Equal(result.Target, job.Targets[i]) || len(result.Services) != 0 || result.ErrorMessage != nil {
+				t.Errorf("empty service result %d = %v", i, result)
+			}
+		}
+		return &pb.PushServicesResponse{Success: true}, nil
+	}}
+	a := newAgentTest(t, s, func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
+		return emit.EmitServices(
+			contract.ServiceResult{Target: targets[0]},
+			contract.ServiceResult{Target: targets[1], Items: []contract.Service{}},
+		)
+	})
 	if err := a.RunOnce(context.Background()); err != nil {
-		t.Fatalf("successful empty scan: %v", err)
+		t.Fatalf("empty service results: %v", err)
 	}
-	if s.count("push") != 0 || s.count("completed") != 1 || s.count("failure") != 0 {
+	if s.count("push") != 1 || s.count("completed") != 1 || s.count("failure") != 0 {
 		t.Errorf("push/completed/failure = %d/%d/%d", s.count("push"), s.count("completed"), s.count("failure"))
 	}
 }
 
-func TestAgentRepeatedUploadsDoNotCompleteBeforeScanReturns(t *testing.T) {
+func TestAgentMultipleTargetUploadsDoNotCompleteBeforeScanReturns(t *testing.T) {
 	accepted, release := make(chan struct{}), make(chan struct{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	s := &agentServer{job: agentTestJob()}
+	job := agentTestJob()
+	job.Targets = append(job.Targets, &pb.JobTarget{AssetScanId: ptr("asset-second"), Host: ptr("second.example.com")})
+	s := &agentServer{job: job}
 	a := newAgentTest(t, s, func(ctx context.Context, targets []contract.Target, emit contract.Emitter) error {
-		for _, port := range []int{80, 443} {
-			if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: port}}}); err != nil {
+		if len(targets) != 2 {
+			return errors.New("expected two assigned targets")
+		}
+		for i, port := range []int{80, 443} {
+			if err := emit.EmitServices(contract.ServiceResult{Target: targets[i], Items: []contract.Service{{Port: port}}}); err != nil {
 				return err
 			}
 		}
@@ -502,18 +522,22 @@ func TestAgentStaleHeartbeatCancelsWorkWithoutRetry(t *testing.T) {
 
 func TestScannerAcknowledgesConcurrentFindingsBeforeWholeBatchReturns(t *testing.T) {
 	job := scannerAPIJob(pb.Scanner_SCANNER_VULNERABILITY)
-	// Identical hosts must remain distinct assignments, including empty targets.
-	job.Targets = append(job.Targets,
-		&pb.JobTarget{AssetScanId: ptr("second"), Host: ptr("example.com"), Port: ptr(int32(8443)), Url: ptr("")},
-		&pb.JobTarget{AssetScanId: ptr("empty"), Host: ptr("example.com"), Port: ptr(int32(9443))},
-	)
+	// Identical hosts must remain distinct assignments.
+	for i := 1; i < 8; i++ {
+		job.Targets = append(job.Targets, &pb.JobTarget{
+			AssetScanId: ptr(fmt.Sprintf("asset-%d", i)),
+			Host:        ptr("example.com"),
+			Port:        ptr(int32(443 + i)),
+			Url:         ptr(""),
+		})
+	}
 	server := &scannerAPIServer{job: job}
 	acknowledged, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }
 	t.Cleanup(unblock)
 	scanner := contract.ScanFunc(func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
-		if len(targets) != 3 {
+		if len(targets) != 8 {
 			return errors.New("bulk engine needs every job target")
 		}
 		errs := make(chan error, 8)
@@ -522,7 +546,7 @@ func TestScannerAcknowledgesConcurrentFindingsBeforeWholeBatchReturns(t *testing
 			workers.Add(1)
 			go func() {
 				defer workers.Done()
-				errs <- emit.EmitFindings(contract.FindingResult{Target: targets[i%2], Items: []contract.Finding{
+				errs <- emit.EmitFindings(contract.FindingResult{Target: targets[i], Items: []contract.Finding{
 					{Name: fmt.Sprintf("finding-%d", i), Severity: contract.SeverityHigh},
 				}})
 			}()
@@ -568,20 +592,25 @@ func TestScannerAcknowledgesConcurrentFindingsBeforeWholeBatchReturns(t *testing
 	}
 	seen := map[string]bool{}
 	counts := map[string]int{}
+	originals := make(map[string]*pb.JobTarget, len(job.Targets))
+	for _, target := range job.Targets {
+		originals[target.GetAssetScanId()] = target
+	}
 	for _, req := range server.findings {
 		if len(req.Results) != 1 {
 			t.Fatalf("unexpected result count: %v", req)
 		}
 		result := req.Results[0]
-		original := job.Targets[0]
-		if result.Target.GetAssetScanId() == "second" {
-			original = job.Targets[1]
+		targetID := result.Target.GetAssetScanId()
+		original, ok := originals[targetID]
+		if !ok {
+			t.Fatalf("push used an unassigned target: %v", result.Target)
 		}
 		assertScannerAPIIdentity(t, req.JobId, req.RunId, result.Target, original)
 		if len(result.Findings) != 1 {
 			t.Errorf("one Emit call sent %d findings; want 1", len(result.Findings))
 		}
-		counts[result.Target.GetAssetScanId()] += len(result.Findings)
+		counts[targetID] += len(result.Findings)
 		for _, finding := range result.Findings {
 			if seen[finding.Name] {
 				t.Errorf("duplicate finding %q", finding.Name)
@@ -592,12 +621,17 @@ func TestScannerAcknowledgesConcurrentFindingsBeforeWholeBatchReturns(t *testing
 	if len(seen) != 8 {
 		t.Errorf("lost concurrent observations: %v", seen)
 	}
-	if counts["asset-original"] != 4 || counts["second"] != 4 || counts["empty"] != 0 {
-		t.Errorf("assignment counts = %v", counts)
+	if len(counts) != 8 {
+		t.Errorf("emitted assignment counts = %v", counts)
+	}
+	for _, target := range job.Targets {
+		if counts[target.GetAssetScanId()] != 1 {
+			t.Errorf("assignment %q push count = %d; want 1", target.GetAssetScanId(), counts[target.GetAssetScanId()])
+		}
 	}
 }
 
-func TestScannerCompletesEveryUnobservedBatchTarget(t *testing.T) {
+func TestScannerUploadsExplicitEmptyResultsForEveryBatchTarget(t *testing.T) {
 	for _, kind := range []pb.Scanner{pb.Scanner_SCANNER_SUBDOMAIN, pb.Scanner_SCANNER_SERVICE_DISCOVER, pb.Scanner_SCANNER_VULNERABILITY} {
 		t.Run(kind.String(), func(t *testing.T) {
 			job := scannerAPIJob(kind)
@@ -609,7 +643,8 @@ func TestScannerCompletesEveryUnobservedBatchTarget(t *testing.T) {
 				if len(targets) != 2 {
 					return errors.New("incomplete input batch")
 				}
-				// Empty outer result sets and empty inner observations are no-ops.
+				// Empty outer result sets are no-ops. Target-only results are final
+				// successful outcomes and must reach the backend.
 				switch kind {
 				case pb.Scanner_SCANNER_SUBDOMAIN:
 					return errors.Join(
@@ -633,8 +668,43 @@ func TestScannerCompletesEveryUnobservedBatchTarget(t *testing.T) {
 			}
 			server.mu.Lock()
 			defer server.mu.Unlock()
-			if len(server.domains)+len(server.services)+len(server.findings) != 0 || server.completed.Load() != 1 {
-				t.Fatal("empty scan must complete its job without any Push request")
+			if len(server.domains)+len(server.services)+len(server.findings) != 1 || server.completed.Load() != 1 {
+				t.Fatalf("empty result pushes/completions = %d/%d; want 1/1", len(server.domains)+len(server.services)+len(server.findings), server.completed.Load())
+			}
+			switch kind {
+			case pb.Scanner_SCANNER_SUBDOMAIN:
+				req := server.domains[0]
+				if len(req.Results) != 2 {
+					t.Fatalf("empty DNS results = %v", req.Results)
+				}
+				for i, result := range req.Results {
+					assertScannerAPIIdentity(t, req.JobId, req.RunId, result.Target, server.job.Targets[i])
+					if len(result.Domains) != 0 || result.ErrorMessage != nil {
+						t.Errorf("empty DNS result %d = %v", i, result)
+					}
+				}
+			case pb.Scanner_SCANNER_SERVICE_DISCOVER:
+				req := server.services[0]
+				if len(req.Results) != 2 {
+					t.Fatalf("empty service results = %v", req.Results)
+				}
+				for i, result := range req.Results {
+					assertScannerAPIIdentity(t, req.JobId, req.RunId, result.Target, server.job.Targets[i])
+					if len(result.Services) != 0 || result.ErrorMessage != nil {
+						t.Errorf("empty service result %d = %v", i, result)
+					}
+				}
+			default:
+				req := server.findings[0]
+				if len(req.Results) != 2 {
+					t.Fatalf("empty finding results = %v", req.Results)
+				}
+				for i, result := range req.Results {
+					assertScannerAPIIdentity(t, req.JobId, req.RunId, result.Target, server.job.Targets[i])
+					if len(result.Findings) != 0 || result.ErrorMessage != nil {
+						t.Errorf("empty finding result %d = %v", i, result)
+					}
+				}
 			}
 		})
 	}
@@ -716,7 +786,7 @@ func TestScannerCancellationInterruptsInFlightEmission(t *testing.T) {
 	defer close(release)
 	var attempts atomic.Int32
 	server := &scannerAPIServer{
-		job: scannerAPIJob(pb.Scanner_SCANNER_SERVICE_DISCOVER),
+		job: scannerAPIServiceBatch(),
 		serviceError: func(*pb.PushServicesRequest) error {
 			if attempts.Add(1) == 2 {
 				close(entered)
@@ -730,7 +800,7 @@ func TestScannerCancellationInterruptsInFlightEmission(t *testing.T) {
 		if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 80}}}); err != nil {
 			return err
 		}
-		err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
+		err := emit.EmitServices(contract.ServiceResult{Target: targets[1], Items: []contract.Service{{Port: 443}}})
 		emitted <- err
 		return err
 	})
@@ -777,7 +847,7 @@ func TestScannerRejectsEmissionsAfterSuccessfulReturn(t *testing.T) {
 	server := &scannerAPIServer{job: scannerAPIJob(pb.Scanner_SCANNER_SERVICE_DISCOVER)}
 	scanner := contract.ScanFunc(func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
 		retainedEmit, retainedTarget = emit, targets[0]
-		return nil
+		return emit.EmitServices(contract.ServiceResult{Target: targets[0]})
 	})
 	if err := runScannerAPIOnce(t, newScannerAPIAgent(t, server, scanner)); err != nil {
 		t.Fatal(err)
@@ -787,7 +857,7 @@ func TestScannerRejectsEmissionsAfterSuccessfulReturn(t *testing.T) {
 	}
 	server.mu.Lock()
 	defer server.mu.Unlock()
-	if len(server.services) != 0 || server.completed.Load() != 1 || server.failed.Load() != 0 {
+	if len(server.services) != 1 || server.completed.Load() != 1 || server.failed.Load() != 0 {
 		t.Error("late emission changed the already completed job")
 	}
 }
@@ -828,7 +898,10 @@ func TestScannerReceivesWholeBatchOnceAndPreservesAssignment(t *testing.T) {
 		if err := emit.EmitServices(contract.ServiceResult{Target: first, Items: []contract.Service{{Port: 80}}}); err != nil {
 			return err
 		}
-		return emit.EmitServices(contract.ServiceResult{Target: targets[1], Items: []contract.Service{{Port: 443}}})
+		if err := emit.EmitServices(contract.ServiceResult{Target: targets[1], Items: []contract.Service{{Port: 443}}}); err != nil {
+			return err
+		}
+		return emit.EmitServices(contract.ServiceResult{Target: targets[2]})
 	})
 	agent := newScannerAPIAgent(t, server, scanner)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -844,8 +917,8 @@ func TestScannerReceivesWholeBatchOnceAndPreservesAssignment(t *testing.T) {
 	}
 	server.mu.Lock()
 	defer server.mu.Unlock()
-	if len(server.services) != 2 {
-		t.Fatalf("pushes = %v; want one push per nonempty Emit call", server.services)
+	if len(server.services) != 3 {
+		t.Fatalf("pushes = %v; want one final push per target", server.services)
 	}
 	for i, req := range server.services {
 		if len(req.Results) != 1 {
@@ -853,8 +926,12 @@ func TestScannerReceivesWholeBatchOnceAndPreservesAssignment(t *testing.T) {
 		}
 		result := req.Results[0]
 		assertScannerAPIIdentity(t, req.JobId, req.RunId, result.Target, original.Targets[i])
-		if len(result.Services) != 1 || result.Services[0].Host != original.Targets[i].GetHost() {
-			t.Errorf("service attribution changed: %v", result.Services)
+		if i < 2 {
+			if len(result.Services) != 1 || result.Services[0].Host != original.Targets[i].GetHost() {
+				t.Errorf("service attribution changed: %v", result.Services)
+			}
+		} else if len(result.Services) != 0 || result.ErrorMessage != nil {
+			t.Errorf("empty service outcome changed: %v", result)
 		}
 	}
 }
@@ -960,7 +1037,7 @@ func TestScannerRunsAllKindsThroughSameInterfaceAndFunction(t *testing.T) {
 	}
 }
 
-func TestScannerCompletesEmptyResults(t *testing.T) {
+func TestScannerUploadsEmptyResultsForEveryKind(t *testing.T) {
 	for _, kind := range []pb.Scanner{pb.Scanner_SCANNER_SUBDOMAIN, pb.Scanner_SCANNER_SERVICE_DISCOVER, pb.Scanner_SCANNER_VULNERABILITY} {
 		t.Run(kind.String(), func(t *testing.T) {
 			server := &scannerAPIServer{job: scannerAPIJob(kind)}
@@ -970,7 +1047,7 @@ func TestScannerCompletesEmptyResults(t *testing.T) {
 				t.Fatal(err)
 			}
 			if calls.Load() != 1 || server.completed.Load() != 1 || server.failed.Load() != 0 {
-				t.Fatal("a successful empty scan did not complete its target and job")
+				t.Fatal("an empty target result did not complete its target and job")
 			}
 			assertScannerAPIPayload(t, server, true)
 		})
@@ -991,28 +1068,31 @@ func scannerAPIHandler(t *testing.T, kind pb.Scanner, adapter string, calls *ato
 			if target.Domain != "example.com" {
 				t.Errorf("domain input = %+v", target)
 			}
-			if !empty {
-				// A descendant-only chunk must not invent parent metadata.
-				return emit.EmitDomains(contract.DNSResult{Target: target, Items: []contract.DNSRecord{
-					{Domain: "www.example.com", IPs: []string{"192.0.2.3"}},
-				}})
+			if empty {
+				return emit.EmitDomains(contract.DNSResult{Target: target})
 			}
+			return emit.EmitDomains(contract.DNSResult{Target: target, Items: []contract.DNSRecord{
+				{Domain: target.Domain},
+				{Domain: "www.example.com", IPs: []string{"192.0.2.3"}},
+			}})
 		case pb.Scanner_SCANNER_SERVICE_DISCOVER:
 			if target.Host != "example.com" || target.Rate != 25 || !reflect.DeepEqual(target.Ports, []int{80, 81, 82, 443}) {
 				t.Errorf("service input = %+v", target)
 			}
-			if !empty {
-				return emit.EmitServices(contract.ServiceResult{Target: target, Items: []contract.Service{{Port: 443}}})
+			if empty {
+				return emit.EmitServices(contract.ServiceResult{Target: target})
 			}
+			return emit.EmitServices(contract.ServiceResult{Target: target, Items: []contract.Service{{Port: 443}}})
 		case pb.Scanner_SCANNER_VULNERABILITY:
 			if target.Host != "example.com" || target.Port != 443 || target.URL != "https://example.com/login" {
 				t.Errorf("vulnerability input = %+v", target)
 			}
-			if !empty {
-				return emit.EmitFindings(contract.FindingResult{Target: target, Items: []contract.Finding{
-					{Name: "Observed vulnerability", Severity: contract.SeverityHigh},
-				}})
+			if empty {
+				return emit.EmitFindings(contract.FindingResult{Target: target})
 			}
+			return emit.EmitFindings(contract.FindingResult{Target: target, Items: []contract.Finding{
+				{Name: "Observed vulnerability", Severity: contract.SeverityHigh},
+			}})
 		}
 		return nil
 	})
@@ -1027,8 +1107,19 @@ func assertScannerAPIPayload(t *testing.T, s *scannerAPIServer, empty bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if empty {
-		if len(s.domains)+len(s.services)+len(s.findings) != 0 {
-			t.Fatal("empty scan sent an observation Push request")
+		switch s.job.Scanner {
+		case pb.Scanner_SCANNER_SUBDOMAIN:
+			if len(s.domains) != 1 || len(s.domains[0].Results) != 1 || len(s.domains[0].Results[0].Domains) != 0 || s.domains[0].Results[0].ErrorMessage != nil {
+				t.Fatalf("empty DNS result = %v", s.domains)
+			}
+		case pb.Scanner_SCANNER_SERVICE_DISCOVER:
+			if len(s.services) != 1 || len(s.services[0].Results) != 1 || len(s.services[0].Results[0].Services) != 0 || s.services[0].Results[0].ErrorMessage != nil {
+				t.Fatalf("empty service result = %v", s.services)
+			}
+		case pb.Scanner_SCANNER_VULNERABILITY:
+			if len(s.findings) != 1 || len(s.findings[0].Results) != 1 || len(s.findings[0].Results[0].Findings) != 0 || s.findings[0].Results[0].ErrorMessage != nil {
+				t.Fatalf("empty finding result = %v", s.findings)
+			}
 		}
 		return
 	}
@@ -1039,12 +1130,15 @@ func assertScannerAPIPayload(t *testing.T, s *scannerAPIServer, empty bool) {
 		}
 		req, result := s.domains[0], s.domains[0].Results[0]
 		assertScannerAPIIdentity(t, req.JobId, req.RunId, result.Target, s.job.Targets[0])
-		if len(result.Domains) != 1 {
+		if len(result.Domains) != 2 {
 			t.Fatalf("DNS results = %v", result.Domains)
 		}
-		record := result.Domains[0]
+		if result.Domains[0].Domain != "example.com" {
+			t.Errorf("assigned DNS record changed: %v", result.Domains[0])
+		}
+		record := result.Domains[1]
 		if record.Domain != "www.example.com" || !reflect.DeepEqual(record.Ips, []string{"192.0.2.3"}) {
-			t.Errorf("DNS observation changed or SDK invented a parent record: %v", record)
+			t.Errorf("DNS descendant observation changed: %v", record)
 		}
 	case pb.Scanner_SCANNER_SERVICE_DISCOVER:
 		if len(s.services) != 1 || len(s.services[0].Results) != 1 {

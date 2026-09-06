@@ -270,51 +270,56 @@ func TestClientTransportRegistrationRetriesRespectAttemptLimit(t *testing.T) {
 	}
 }
 
-func TestClientTransportRegistrationRetrySharesRequestBudget(t *testing.T) {
-	const budget = time.Second
+func TestClientTransportRegistrationRetryGetsFreshRequestTimeout(t *testing.T) {
+	const (
+		requestTimeout = 500 * time.Millisecond
+		retryBackoff   = 25 * time.Millisecond
+	)
+	type callerContextKey struct{}
+	callerKey := callerContextKey{}
+
 	var calls atomic.Int32
-	deadlines := make(chan time.Time, 2)
-	s := &clientTestServer{register: func(ctx context.Context, _ *pb.RegisterRequest) (*pb.RegisterResponse, error) {
-		deadline, _ := ctx.Deadline()
-		select {
-		case deadlines <- deadline:
-		default:
-		}
+	s := &clientTestServer{register: func(context.Context, *pb.RegisterRequest) (*pb.RegisterResponse, error) {
 		if calls.Add(1) == 1 {
-			select {
-			case <-time.After(200 * time.Millisecond):
-				return nil, connect.NewError(connect.CodeUnavailable, errors.New("retry registration"))
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
+			return nil, connect.NewError(connect.CodeUnavailable, errors.New("retry registration"))
 		}
-		<-ctx.Done()
-		return nil, ctx.Err()
+		return &pb.RegisterResponse{RunnerId: "runner-server"}, nil
 	}}
-	policy := contract.RetryPolicy{MaxAttempts: 10, InitialBackoff: 20 * time.Millisecond, MaxBackoff: 20 * time.Millisecond, BackoffMultiplier: 1, RetryableStatusCodes: []int{503}}
 	server := startClientServer(t, s)
-	agent := New("network-token", server.URL, server.Client(), budget, policy)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	requestContexts := make(chan context.Context, 2)
+	transport := server.Client().Transport
+	httpClient := &http.Client{Transport: transportRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requestContexts <- req.Context()
+		return transport.RoundTrip(req)
+	})}
+	policy := contract.RetryPolicy{MaxAttempts: 2, InitialBackoff: retryBackoff, MaxBackoff: retryBackoff, BackoffMultiplier: 1, RetryableStatusCodes: []int{503}}
+	agent := New("network-token", server.URL, httpClient, requestTimeout, policy)
+	ctx := context.WithValue(context.Background(), callerKey, "registration-caller")
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	started := time.Now()
-	_, err := agent.Register(ctx, Registration{})
-	if connect.CodeOf(err) != connect.CodeDeadlineExceeded {
-		t.Fatalf("shared registration budget: got %v, want deadline exceeded", err)
+
+	runnerID, err := agent.Register(ctx, Registration{})
+	if err != nil {
+		t.Fatalf("registration retry: %v", err)
+	}
+	if runnerID != "runner-server" {
+		t.Fatalf("registration runner = %q, want runner-server", runnerID)
 	}
 	if calls.Load() != 2 {
-		t.Fatalf("registration calls = %d, want initial attempt and one bounded retry", calls.Load())
+		t.Fatalf("registration calls = %d, want initial attempt and one retry", calls.Load())
 	}
-	first, second := <-deadlines, <-deadlines
-	// The server receives rounded relative deadlines; allow transport overhead
-	// while rejecting a fresh one-second budget after the 200ms first attempt.
-	if first.IsZero() || second.IsZero() || second.After(first.Add(100*time.Millisecond)) {
-		t.Errorf("registration attempts did not share a deadline: first=%v, second=%v", first, second)
+
+	first, second := <-requestContexts, <-requestContexts
+	firstDeadline, firstOK := first.Deadline()
+	secondDeadline, secondOK := second.Deadline()
+	if !firstOK || !secondOK {
+		t.Fatalf("registration request deadlines present = %t/%t, want true/true", firstOK, secondOK)
 	}
-	if first.After(started.Add(budget + 100*time.Millisecond)) {
-		t.Error("registration deadline exceeded the configured request budget")
+	if extension := secondDeadline.Sub(firstDeadline); extension < retryBackoff/2 {
+		t.Errorf("retry deadline extension = %v, want a fresh %v request timeout", extension, requestTimeout)
 	}
-	if s.count("poll") != 0 {
-		t.Error("poll ran after registration timeout")
+	if first.Value(callerKey) != "registration-caller" || second.Value(callerKey) != "registration-caller" {
+		t.Error("registration attempts did not derive from the caller context")
 	}
 }
 

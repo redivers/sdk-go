@@ -126,6 +126,7 @@ type agentServer struct {
 	jobHeartbeat func(context.Context, *pb.JobHeartbeatRequest) error
 	completed    func(context.Context, *pb.JobCompletedRequest) (*pb.JobCompletedResponse, error)
 	failure      func(context.Context, *pb.JobFailureRequest) (*pb.JobFailureResponse, error)
+	validateID   func(string, string)
 }
 
 func (s *agentServer) record(event string) {
@@ -148,6 +149,10 @@ func (s *agentServer) count(event string) int {
 
 func (s *agentServer) identity(jobID, runID string) {
 	s.t.Helper()
+	if s.validateID != nil {
+		s.validateID(jobID, runID)
+		return
+	}
 	if jobID != "job-original" || runID != "run-original" {
 		s.t.Errorf("callback identity = %q/%q", jobID, runID)
 	}

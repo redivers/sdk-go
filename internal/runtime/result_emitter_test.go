@@ -176,9 +176,9 @@ func TestScannerRejectsTargetFromAnotherExecution(t *testing.T) {
 		t.Run(kind.String(), func(t *testing.T) {
 			var previous contract.Target
 			first := &scannerAPIServer{job: scannerAPIJob(kind)}
-			capture := contract.ScanFunc(func(_ context.Context, targets []contract.Target, _ contract.Emitter) error {
+			capture := contract.ScanFunc(func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
 				previous = targets[0]
-				return nil
+				return scannerAPIEmitValid(kind, emit, targets[0])
 			})
 			if err := runScannerAPIOnce(t, newScannerAPIAgent(t, first, capture)); err != nil {
 				t.Fatal(err)
@@ -210,7 +210,11 @@ func TestScannerEmitWaitsForAcknowledgementAndSerializesConcurrentCalls(t *testi
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }
 	var attempts atomic.Int32
-	server := &scannerAPIServer{job: scannerAPIJob(pb.Scanner_SCANNER_SERVICE_DISCOVER)}
+	job := scannerAPIJob(pb.Scanner_SCANNER_SERVICE_DISCOVER)
+	secondTarget := proto.Clone(job.Targets[0]).(*pb.JobTarget)
+	secondTarget.AssetScanId = ptr("second")
+	job.Targets = append(job.Targets, secondTarget)
+	server := &scannerAPIServer{job: job}
 	server.serviceError = func(*pb.PushServicesRequest) error {
 		if attempts.Add(1) == 1 {
 			close(firstEntered)
@@ -230,7 +234,7 @@ func TestScannerEmitWaitsForAcknowledgementAndSerializesConcurrentCalls(t *testi
 		<-firstEntered
 		go func() {
 			close(secondIssued)
-			err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
+			err := emit.EmitServices(contract.ServiceResult{Target: targets[1], Items: []contract.Service{{Port: 443}}})
 			returned <- struct{}{}
 			errs <- err
 		}()
@@ -345,10 +349,76 @@ func TestScannerRejectsWrongEmitterMethodIncludingEmptyCalls(t *testing.T) {
 	}
 }
 
-func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *testing.T) {
+func TestScannerUploadsErrorOnlyResultsAndCompletes(t *testing.T) {
+	const message = "target scan failed"
 	for _, kind := range []pb.Scanner{pb.Scanner_SCANNER_SUBDOMAIN, pb.Scanner_SCANNER_SERVICE_DISCOVER, pb.Scanner_SCANNER_VULNERABILITY} {
 		t.Run(kind.String(), func(t *testing.T) {
 			server := &scannerAPIServer{job: scannerAPIJob(kind)}
+			scanner := contract.ScanFunc(func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
+				switch kind {
+				case pb.Scanner_SCANNER_SUBDOMAIN:
+					return emit.EmitDomains(contract.DNSResult{Target: targets[0], ErrorMessage: ptr(message)})
+				case pb.Scanner_SCANNER_SERVICE_DISCOVER:
+					return emit.EmitServices(contract.ServiceResult{Target: targets[0], ErrorMessage: ptr(message)})
+				default:
+					return emit.EmitFindings(contract.FindingResult{Target: targets[0], ErrorMessage: ptr(message)})
+				}
+			})
+			if err := runScannerAPIOnce(t, newScannerAPIAgent(t, server, scanner)); err != nil {
+				t.Fatal(err)
+			}
+			if server.started.Load() != 1 || server.completed.Load() != 1 || server.failed.Load() != 0 {
+				t.Fatalf("job lifecycle start/complete/fail = %d/%d/%d", server.started.Load(), server.completed.Load(), server.failed.Load())
+			}
+			server.mu.Lock()
+			defer server.mu.Unlock()
+			if len(server.domains)+len(server.services)+len(server.findings) != 1 {
+				t.Fatalf("push calls = domains:%d services:%d findings:%d; want only the matching push", len(server.domains), len(server.services), len(server.findings))
+			}
+			switch kind {
+			case pb.Scanner_SCANNER_SUBDOMAIN:
+				req := server.domains[0]
+				if len(req.GetResults()) != 1 {
+					t.Fatalf("domain results = %v", req.GetResults())
+				}
+				result := req.GetResults()[0]
+				assertScannerAPIIdentity(t, req.GetJobId(), req.GetRunId(), result.GetTarget(), server.job.GetTargets()[0])
+				if !result.HasErrorMessage() || result.GetErrorMessage() != message || len(result.GetDomains()) != 0 {
+					t.Errorf("domain error result = %v", result)
+				}
+			case pb.Scanner_SCANNER_SERVICE_DISCOVER:
+				req := server.services[0]
+				if len(req.GetResults()) != 1 {
+					t.Fatalf("service results = %v", req.GetResults())
+				}
+				result := req.GetResults()[0]
+				assertScannerAPIIdentity(t, req.GetJobId(), req.GetRunId(), result.GetTarget(), server.job.GetTargets()[0])
+				if !result.HasErrorMessage() || result.GetErrorMessage() != message || len(result.GetServices()) != 0 {
+					t.Errorf("service error result = %v", result)
+				}
+			default:
+				req := server.findings[0]
+				if len(req.GetResults()) != 1 {
+					t.Fatalf("finding results = %v", req.GetResults())
+				}
+				result := req.GetResults()[0]
+				assertScannerAPIIdentity(t, req.GetJobId(), req.GetRunId(), result.GetTarget(), server.job.GetTargets()[0])
+				if !result.HasErrorMessage() || result.GetErrorMessage() != message || len(result.GetFindings()) != 0 {
+					t.Errorf("finding error result = %v", result)
+				}
+			}
+		})
+	}
+}
+
+func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *testing.T) {
+	for _, kind := range []pb.Scanner{pb.Scanner_SCANNER_SUBDOMAIN, pb.Scanner_SCANNER_SERVICE_DISCOVER, pb.Scanner_SCANNER_VULNERABILITY} {
+		t.Run(kind.String(), func(t *testing.T) {
+			job := scannerAPIJob(kind)
+			second := proto.Clone(job.Targets[0]).(*pb.JobTarget)
+			second.AssetScanId = ptr("second")
+			job.Targets = append(job.Targets, second)
+			server := &scannerAPIServer{job: job}
 			assertPushCount := func(want int) error {
 				server.mu.Lock()
 				defer server.mu.Unlock()
@@ -359,12 +429,15 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 				return nil
 			}
 			scanner := contract.ScanFunc(func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
-				target := targets[0]
+				firstTarget, secondTarget := targets[0], targets[1]
 				switch kind {
 				case pb.Scanner_SCANNER_SUBDOMAIN:
 					ttl := 60
-					records := []contract.DNSRecord{{Domain: "first.example.com", IPs: []string{"192.0.2.3"}, TXT: []string{"observed"}, TTL: &ttl}}
-					results := []contract.DNSResult{{Target: target, Items: records}, {Target: target, Items: []contract.DNSRecord{{Domain: "second.example.com"}}}}
+					records := []contract.DNSRecord{
+						{Domain: "first.example.com", IPs: []string{"192.0.2.3"}, TXT: []string{"observed"}, TTL: &ttl},
+						{Domain: firstTarget.Domain},
+					}
+					results := []contract.DNSResult{{Target: firstTarget, Items: records}, {Target: firstTarget, Items: []contract.DNSRecord{{Domain: "second.example.com"}}}}
 					if err := emit.EmitDomains(results...); err != nil {
 						return err
 					}
@@ -374,8 +447,8 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 					records[0].Domain, records[0].IPs[0], records[0].TXT[0], ttl = "changed.invalid", "192.0.2.99", "changed", 90
 					results[1].Items[0].Domain = "changed.invalid"
 					results[0] = contract.DNSResult{Target: contract.Target{Domain: "changed.invalid"}}
-					if err := emit.EmitDomains(contract.DNSResult{Target: target, Items: []contract.DNSRecord{
-						{Domain: "third.example.com"}, {Domain: "fourth.example.com"},
+					if err := emit.EmitDomains(contract.DNSResult{Target: secondTarget, Items: []contract.DNSRecord{
+						{Domain: secondTarget.Domain}, {Domain: "third.example.com"}, {Domain: "fourth.example.com"},
 					}}); err != nil {
 						return err
 					}
@@ -386,7 +459,7 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 						HTTP:        &contract.HTTPData{Title: "observed", IPs: []string{"192.0.2.3"}, Technologies: []string{"original"}},
 						Certificate: &contract.Certificate{SubjectAN: []string{"example.com"}, Wildcard: &wildcard},
 					}}
-					results := []contract.ServiceResult{{Target: target, Items: services}, {Target: target, Items: []contract.Service{{Port: 81}}}}
+					results := []contract.ServiceResult{{Target: firstTarget, Items: services}, {Target: firstTarget, Items: []contract.Service{{Port: 81}}}}
 					if err := emit.EmitServices(results...); err != nil {
 						return err
 					}
@@ -398,7 +471,7 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 					service.HTTP.Technologies[0], service.Certificate.SubjectAN[0], wildcard = "changed", "changed.invalid", true
 					results[1].Items[0].Port = 65536
 					results[0] = contract.ServiceResult{Target: contract.Target{Host: "changed.invalid"}}
-					if err := emit.EmitServices(contract.ServiceResult{Target: target, Items: []contract.Service{{Port: 82}, {Port: 443}}}); err != nil {
+					if err := emit.EmitServices(contract.ServiceResult{Target: secondTarget, Items: []contract.Service{{Port: 82}, {Port: 443}}}); err != nil {
 						return err
 					}
 				case pb.Scanner_SCANNER_VULNERABILITY:
@@ -408,7 +481,7 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 						CWEs: []string{"CWE-79"}, References: []string{"https://example.com/reference"},
 						Requests: []contract.RawHTTPRequest{{Request: "GET / HTTP/1.1", Response: "HTTP/1.1 200 OK"}},
 					}}
-					results := []contract.FindingResult{{Target: target, Items: findings}, {Target: target, Items: []contract.Finding{{Name: "second", Severity: contract.SeverityInfo}}}}
+					results := []contract.FindingResult{{Target: firstTarget, Items: findings}, {Target: firstTarget, Items: []contract.Finding{{Name: "second", Severity: contract.SeverityInfo}}}}
 					if err := emit.EmitFindings(results...); err != nil {
 						return err
 					}
@@ -419,7 +492,7 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 					first.Name, first.CWEs[0], first.References[0], first.Requests[0].Request, score = "changed", "changed", "changed", "changed", 1
 					results[1].Items[0].Name = "changed"
 					results[0] = contract.FindingResult{Target: contract.Target{Host: "changed.invalid"}}
-					if err := emit.EmitFindings(contract.FindingResult{Target: target, Items: []contract.Finding{
+					if err := emit.EmitFindings(contract.FindingResult{Target: secondTarget, Items: []contract.Finding{
 						{Name: "third", Severity: contract.SeverityLow}, {Name: "fourth", Severity: contract.SeverityMedium},
 					}}); err != nil {
 						return err
@@ -438,11 +511,11 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 					t.Fatalf("DNS pushes = %v", server.domains)
 				}
 				var domains []string
-				for _, req := range server.domains {
-					if len(req.Results) != 1 || len(req.Results[0].Domains) != 2 {
-						t.Fatalf("DNS chunk = %v; want only its two observations", req)
+				for i, req := range server.domains {
+					if len(req.Results) != 1 || len(req.Results[0].Domains) != 3 {
+						t.Fatalf("DNS result = %v; want its assigned-domain record and two observations", req)
 					}
-					assertScannerAPIIdentity(t, req.JobId, req.RunId, req.Results[0].Target, server.job.Targets[0])
+					assertScannerAPIIdentity(t, req.JobId, req.RunId, req.Results[0].Target, server.job.Targets[i])
 					for _, record := range req.Results[0].Domains {
 						domains = append(domains, record.Domain)
 					}
@@ -451,7 +524,7 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 				if len(record.Ips) != 1 || record.Ips[0] != "192.0.2.3" || len(record.Txt) != 1 || record.Txt[0] != "observed" || record.GetTtl() != 60 {
 					t.Errorf("caller mutation leaked into DNS payload: %v", record)
 				}
-				wantDomains := []string{"first.example.com", "second.example.com", "third.example.com", "fourth.example.com"}
+				wantDomains := []string{"first.example.com", "example.com", "second.example.com", "example.com", "third.example.com", "fourth.example.com"}
 				if !reflect.DeepEqual(domains, wantDomains) {
 					t.Errorf("caller mutation leaked into DNS result sets: %v", domains)
 				}
@@ -461,12 +534,12 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 				}
 				for i, req := range server.services {
 					if len(req.Results) != 1 || len(req.Results[0].Services) != 2 {
-						t.Fatalf("service chunk = %v; want only its two observations", req)
+						t.Fatalf("service result = %v; want only its two observations", req)
 					}
-					assertScannerAPIIdentity(t, req.JobId, req.RunId, req.Results[0].Target, server.job.Targets[0])
+					assertScannerAPIIdentity(t, req.JobId, req.RunId, req.Results[0].Target, server.job.Targets[i])
 					for j, service := range req.Results[0].Services {
 						if want := []int32{80, 81, 82, 443}[i*2+j]; service.Port != want {
-							t.Errorf("service chunk %d result %d port = %d; want %d", i, j, service.Port, want)
+							t.Errorf("service push %d result %d port = %d; want %d", i, j, service.Port, want)
 						}
 					}
 				}
@@ -487,12 +560,12 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 				}
 				for i, req := range server.findings {
 					if len(req.Results) != 1 || len(req.Results[0].Findings) != 2 {
-						t.Fatalf("finding chunk = %v; want only its two observations", req)
+						t.Fatalf("finding result = %v; want only its two observations", req)
 					}
-					assertScannerAPIIdentity(t, req.JobId, req.RunId, req.Results[0].Target, server.job.Targets[0])
+					assertScannerAPIIdentity(t, req.JobId, req.RunId, req.Results[0].Target, server.job.Targets[i])
 					for j, finding := range req.Results[0].Findings {
 						if want := []string{"observed", "second", "third", "fourth"}[i*2+j]; finding.Name != want {
-							t.Errorf("finding chunk %d result %d name = %q; want %q", i, j, finding.Name, want)
+							t.Errorf("finding push %d result %d name = %q; want %q", i, j, finding.Name, want)
 						}
 					}
 				}
@@ -588,7 +661,7 @@ func TestScannerValidatesWholeEmitCallAndPreservesEarlierAcknowledgements(t *tes
 func scannerAPIEmitValid(kind pb.Scanner, emit contract.Emitter, target contract.Target) error {
 	switch kind {
 	case pb.Scanner_SCANNER_SUBDOMAIN:
-		return emit.EmitDomains(contract.DNSResult{Target: target, Items: []contract.DNSRecord{{Domain: "www." + target.Domain}}})
+		return emit.EmitDomains(contract.DNSResult{Target: target, Items: []contract.DNSRecord{{Domain: target.Domain}}})
 	case pb.Scanner_SCANNER_SERVICE_DISCOVER:
 		return emit.EmitServices(contract.ServiceResult{Target: target, Items: []contract.Service{{Port: 443}}})
 	default:
@@ -596,16 +669,22 @@ func scannerAPIEmitValid(kind pb.Scanner, emit contract.Emitter, target contract
 	}
 }
 
-func TestScannerDNSOwnRecordIsOptionalAndCanRepeatInLaterCalls(t *testing.T) {
-	server := &scannerAPIServer{job: scannerAPIJob(pb.Scanner_SCANNER_SUBDOMAIN)}
+func TestScannerPreservesDNSResultMetadata(t *testing.T) {
+	job := scannerAPIJob(pb.Scanner_SCANNER_SUBDOMAIN)
+	for i := 1; i < 4; i++ {
+		target := proto.Clone(job.Targets[0]).(*pb.JobTarget)
+		target.AssetScanId = ptr(fmt.Sprintf("asset-%d", i))
+		job.Targets = append(job.Targets, target)
+	}
+	server := &scannerAPIServer{job: job}
 	scanner := contract.ScanFunc(func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
-		for _, record := range []contract.DNSRecord{
-			{Domain: "www.example.com"},
-			{Domain: "example.com", TTL: ptr(300)},
-			{Domain: "EXAMPLE.COM.", TTL: ptr(600)},
-			{Domain: "www.example.com", TTL: ptr(60)},
+		for i, records := range [][]contract.DNSRecord{
+			{{Domain: "example.com"}, {Domain: "www.example.com"}},
+			{{Domain: "example.com", TTL: ptr(300)}},
+			{{Domain: "EXAMPLE.COM.", TTL: ptr(600)}},
+			{{Domain: "example.com"}, {Domain: "www.example.com", TTL: ptr(60)}},
 		} {
-			if err := emit.EmitDomains(contract.DNSResult{Target: targets[0], Items: []contract.DNSRecord{record}}); err != nil {
+			if err := emit.EmitDomains(contract.DNSResult{Target: targets[i], Items: records}); err != nil {
 				return err
 			}
 		}
@@ -620,12 +699,17 @@ func TestScannerDNSOwnRecordIsOptionalAndCanRepeatInLaterCalls(t *testing.T) {
 		t.Fatalf("Push calls/completions = %d/%d; want 4/1", len(server.domains), server.completed.Load())
 	}
 	for i, req := range server.domains {
-		if len(req.Results) != 1 || len(req.Results[0].Domains) != 1 {
-			t.Fatalf("call %d contains synthesized or retained records: %v", i, req)
+		wantRecords := []int{2, 1, 1, 2}[i]
+		if len(req.Results) != 1 || len(req.Results[0].Domains) != wantRecords {
+			t.Fatalf("call %d DNS records = %v; want %d", i, req.Results, wantRecords)
 		}
+		assertScannerAPIIdentity(t, req.JobId, req.RunId, req.Results[0].Target, server.job.Targets[i])
 	}
 	if server.domains[1].Results[0].Domains[0].GetTtl() != 300 || server.domains[2].Results[0].Domains[0].GetTtl() != 600 {
-		t.Fatal("separate own-record observations lost their metadata")
+		t.Fatal("assigned-domain records lost their metadata")
+	}
+	if server.domains[3].Results[0].Domains[1].GetTtl() != 60 {
+		t.Fatal("descendant record lost its metadata")
 	}
 }
 
@@ -659,6 +743,7 @@ func TestScannerPreservesRepeatedDNSDescendantsAcrossMergedWrappers(t *testing.T
 	scanner := contract.ScanFunc(func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
 		return emit.EmitDomains(
 			contract.DNSResult{Target: targets[0], Items: []contract.DNSRecord{
+				{Domain: targets[0].Domain},
 				{Domain: "www.example.com", TXT: []string{"first"}, TTL: ptr(300)},
 				{Domain: "api.example.com", TXT: []string{"distinct"}},
 			}},
@@ -676,7 +761,7 @@ func TestScannerPreservesRepeatedDNSDescendantsAcrossMergedWrappers(t *testing.T
 		t.Fatalf("repeated descendant request did not upload once and complete: %v", server.domains)
 	}
 	records := server.domains[0].Results[0].Domains
-	if len(records) != 3 || records[0].Domain != "www.example.com" || records[0].GetTtl() != 300 || records[0].GetTxt()[0] != "first" || records[1].Domain != "api.example.com" || records[1].GetTxt()[0] != "distinct" || records[2].Domain != "WWW.EXAMPLE.COM." || records[2].Ttl != nil || records[2].GetTxt()[0] != "second" {
+	if len(records) != 4 || records[0].Domain != "example.com" || records[1].Domain != "www.example.com" || records[1].GetTtl() != 300 || records[1].GetTxt()[0] != "first" || records[2].Domain != "api.example.com" || records[2].GetTxt()[0] != "distinct" || records[3].Domain != "WWW.EXAMPLE.COM." || records[3].Ttl != nil || records[3].GetTxt()[0] != "second" {
 		t.Fatalf("merged wrappers lost or combined complete DNS observations: %v", records)
 	}
 }
@@ -696,13 +781,13 @@ func TestScannerEmitsMultipleTargetsAndMergesRepeatedResultSets(t *testing.T) {
 					if len(targets) != 3 {
 						return fmt.Errorf("input batch has %d targets; want 3", len(targets))
 					}
-					// Interleave identical visible targets. Repeat one target inside
-					// this call, then append another observation in a later call.
+					// Interleave identical visible targets and repeat one target inside
+					// a single final request. Emit the remaining target separately.
 					switch kind {
 					case pb.Scanner_SCANNER_SUBDOMAIN:
 						results := []contract.DNSResult{
-							{Target: targets[1], Items: []contract.DNSRecord{{Domain: "one.example.com"}}},
-							{Target: targets[0], Items: []contract.DNSRecord{{Domain: "two.example.com"}, {Domain: "three.example.com"}}},
+							{Target: targets[1], Items: []contract.DNSRecord{{Domain: targets[1].Domain}, {Domain: "one.example.com"}}},
+							{Target: targets[0], Items: []contract.DNSRecord{{Domain: targets[0].Domain}, {Domain: "two.example.com"}, {Domain: "three.example.com"}}},
 							{Target: targets[1], Items: []contract.DNSRecord{{Domain: "four.example.com"}}},
 						}
 						var err error
@@ -714,7 +799,7 @@ func TestScannerEmitsMultipleTargetsAndMergesRepeatedResultSets(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						return emit.EmitDomains(contract.DNSResult{Target: targets[0], Items: []contract.DNSRecord{{Domain: "five.example.com"}}})
+						return emit.EmitDomains(contract.DNSResult{Target: targets[2], Items: []contract.DNSRecord{{Domain: targets[2].Domain}, {Domain: "five.example.com"}}})
 					case pb.Scanner_SCANNER_SERVICE_DISCOVER:
 						results := []contract.ServiceResult{
 							{Target: targets[1], Items: []contract.Service{{Port: 80}}},
@@ -730,7 +815,7 @@ func TestScannerEmitsMultipleTargetsAndMergesRepeatedResultSets(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						return emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
+						return emit.EmitServices(contract.ServiceResult{Target: targets[2], Items: []contract.Service{{Port: 443}}})
 					default:
 						finding := func(name string) contract.Finding {
 							return contract.Finding{Name: name, Severity: contract.SeverityHigh}
@@ -749,7 +834,7 @@ func TestScannerEmitsMultipleTargetsAndMergesRepeatedResultSets(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						return emit.EmitFindings(contract.FindingResult{Target: targets[0], Items: []contract.Finding{finding("five")}})
+						return emit.EmitFindings(contract.FindingResult{Target: targets[2], Items: []contract.Finding{finding("five")}})
 					}
 				})
 				if err := runScannerAPIOnce(t, newScannerAPIAgent(t, server, scanner)); err != nil {
@@ -807,11 +892,11 @@ func TestScannerEmitsMultipleTargetsAndMergesRepeatedResultSets(t *testing.T) {
 						}
 					}
 				}
-				want := [][]string{{"two", "three", "five"}, {"one", "four"}, nil}
+				want := [][]string{{"two", "three"}, {"one", "four"}, {"five"}}
 				if kind == pb.Scanner_SCANNER_SUBDOMAIN {
-					want = [][]string{{"two.example.com", "three.example.com", "five.example.com"}, {"one.example.com", "four.example.com"}, nil}
+					want = [][]string{{"example.com", "two.example.com", "three.example.com"}, {"example.com", "one.example.com", "four.example.com"}, {"example.com", "five.example.com"}}
 				} else if kind == pb.Scanner_SCANNER_SERVICE_DISCOVER {
-					want = [][]string{{"81", "82", "443"}, {"80", "443"}, nil}
+					want = [][]string{{"81", "82"}, {"80", "443"}, {"443"}}
 				}
 				if !reflect.DeepEqual(got, want) {
 					t.Errorf("merged target results = %v; want %v", got, want)

@@ -42,6 +42,12 @@ func scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter
         if err != nil {
             var dnsErr *net.DNSError
             if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+                if emitErr := emitter.EmitDomains(rediver.DNSResult{
+                    Target: target,
+                    ErrorMessage: rediver.Ptr(dnsErr.Error()),
+                }); emitErr != nil {
+                    return emitErr
+                }
                 continue
             }
             return err
@@ -161,17 +167,20 @@ type FindingResult = Result[Finding]
 Use either spelling, including slices such as `[]Result[Finding]` passed to
 `EmitFindings(results...)`. All result types store observations in `Items`.
 
-All three result types also have an optional `ErrorMessage *string` for a scan
-error on that target, including when partial observations are available. Leave
-it `nil` when absent, or set it with `rediver.Ptr("scan timed out")`.
-`rediver.Ptr("")` represents an explicitly present empty message.
+Every supplied result is the complete, final outcome for its target. For every
+result type, empty `Items` with a nil `ErrorMessage` explicitly reports that the
+target produced no observations. The SDK uploads that target-only result; the
+backend decides whether to accept it and how it changes target status. Set
+`ErrorMessage` when the scanner has reached a final failure for that target.
+Leave it `nil` when absent. `rediver.Ptr("")` represents an explicitly present
+empty message.
 
-This field is reserved for upcoming protocol support: the current SDK transport
-does not upload it or use it to change job status. A result containing only
-`ErrorMessage` remains a no-op after target validation. Return an error from
-`Scan` when the whole job should fail.
+`ErrorMessage` cannot accompany non-empty `Items`, including across multiple
+result wrappers for the same target in one `Emit*` call. The SDK rejects that
+call before upload. Return an error from `Scan` for transient whole-job trouble,
+such as a crashed tool, so the SDK reports `JobFailure` instead.
 
-Emit one result set as soon as its observations are available:
+For realtime reporting, emit each target once, as soon as its scan finishes:
 
 ```go
 oneResult := rediver.FindingResult{
@@ -187,8 +196,16 @@ if err := emitter.EmitFindings(oneResult); err != nil {
 }
 ```
 
-An engine can also return a list spanning multiple assigned targets. For example,
-with findings already collected for two targets:
+An empty successful service result closes a host where no assigned port is open:
+
+```go
+if err := emitter.EmitServices(rediver.ServiceResult{Target: target}); err != nil {
+    return err
+}
+```
+
+An engine can also return a list spanning multiple assigned targets that finish
+together. For example, with findings already collected for two targets:
 
 ```go
 results := []rediver.FindingResult{
@@ -205,43 +222,46 @@ single-result and batch forms work with `EmitDomains` and `EmitServices`; see th
 All three methods belong to one `Emitter`. Calling a method incompatible with the
 assigned job returns an error, even with zero arguments. Unknown payload types
 cannot be passed to these typed methods. For the matching method, zero arguments
-or an expanded nil/empty result slice is a valid no-op. A result set with no inner
-observations is also a no-op, but its `Target` must still belong to the assignment.
-Return emission errors from your scanner; the SDK remembers them so ignoring one
-cannot silently complete the batch.
+or an expanded nil/empty result slice is a valid no-op. Every supplied result
+must carry an original assigned `Target`; it is uploaded even when both `Items`
+and `ErrorMessage` are empty. Return emission errors from your scanner; the SDK
+remembers them so ignoring one cannot silently complete the batch.
 
 `Emitter` supports concurrent calls and snapshots accepted observations before
 returning. Finish all your goroutines before `Scan` returns and honor `ctx`.
 The emitter closes when scanning finishes; late emissions fail.
 
-**Each `Emit*` call with observations uploads immediately and waits for backend acknowledgement.** You
-can emit several chunks for the same target while scanning continues. Calls are
-serialized within a job to provide backpressure. Each call accepts at most
-100,000 observations and 64 MiB of encoded payload; there is no cumulative job
-result limit. Split larger output across calls. These limits exclude Go object
-overhead.
+**Each `Emit*` call with one or more results uploads immediately and waits for
+backend acknowledgement.** The first push that the backend accepts for a target
+terminalizes that target. Emit every target exactly once, including targets with
+no observations; later pushes for the same target are ignored by the backend.
+For realtime reporting, emit each target as soon as its scan finishes. Calls are
+serialized within a job to provide backpressure.
 
 | Scanner outcome | Meaning |
 |---|---|
-| `Emit*` returns `nil` | Backend acknowledged this chunk, or the call was an empty no-op. |
-| `Scan` returns `nil` | Finish every assigned target and complete the job. |
-| No emissions for a target, with successful `Scan` | Finish that target with no observations. |
-| `Scan` errors, panics, or is canceled | Report failure; already accepted observations remain stored. |
+| `Emit*()` or an empty outer result slice | No-op; no RPC is sent. |
+| `Emit*(Result{Target: target})` | Upload a target-only result with no observations or error. |
+| `Emit*` returns `nil` | Backend acknowledged the push. A later outcome for an already-terminal target remains ignored. |
+| `Scan` returns `nil` | Request job completion after every assigned target has emitted its final result. |
+| No result for an assigned target | `JobCompleted` is rejected while that target remains unfinished. |
+| `Scan` errors, panics, or is canceled | Report failure; already accepted target outcomes remain stored. |
 | An emit error occurs | Fail the job even if the scanner ignores it and returns `nil`. |
 
 DNS records may describe the assigned domain or strict descendants; direct
-subdomain targets may only report themselves. The own-domain record is optional.
-The SDK never fabricates DNS metadata. Successful DNS completion still lets the
-backend schedule the assigned hostname for the next enabled stage. Each emitted
-DNS/service observation is a complete record: later observations replace its
-scanner-owned metadata. For services, an empty `Host` uses the assigned host.
+subdomain targets may only report themselves. The SDK does not require an
+assigned-domain record: target-only, descendant-only, and own-domain payloads
+are uploaded, and the backend applies its own acceptance rules. The SDK never
+fabricates DNS metadata. Each emitted DNS/service observation is a complete
+record; backend projection replaces its scanner-owned metadata rather than
+merging it. For services, an empty `Host` uses the assigned host.
 
 The SDK gives each push a fresh idempotency key and reuses it on transport retries
 within the current job run. A lost acknowledgement therefore does not repeat that
-push's projection. A later `Emit*` call is a new push, even with identical data.
-If a job attempt fails, backend may scan its unfinished targets again; accepted
-partial results remain available. Return emission errors promptly and honor
-cancellation.
+push's projection. A separate `Emit*` call uses a new key, but cannot update a
+target terminalized by its first accepted push. If a job attempt fails, backend
+may scan its unfinished targets again; accepted outcomes for finished targets
+remain available. Return emission errors promptly and honor cancellation.
 
 Result models use plain strings and integers for ordinary fields. Optional values
 that need explicit presence use pointers, such as `DNSRecord.TTL`,

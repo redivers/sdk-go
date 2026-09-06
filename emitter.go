@@ -6,35 +6,39 @@ import "github.com/redivers/sdk-go/internal/contract"
 // accepts per-target result sets; expand a slice with the ... operator.
 // Only the method matching the backend job's scanner kind may be used.
 //
-// On that method, zero arguments or empty observations emit nothing. A result
-// set still requires an original Target even when its observations are empty.
-// Emitting never completes a target; a successful Scan completes the job.
-// ErrorMessage is not uploaded until the backend protocol supports it and does
-// not affect job status. Results containing only ErrorMessage emit nothing.
+// On that method, zero arguments emit nothing. Every supplied result is the
+// complete final outcome for its original Target. Empty Items with no
+// ErrorMessage reports no observations and is still uploaded. A non-nil
+// ErrorMessage reports a final failure for that target and cannot accompany
+// Items. Return an error from Scan to report a transient whole-job failure.
 //
 // Methods are safe for concurrent calls and snapshot observations before
-// returning. A nil error acknowledges backend persistence. Calls are serialized
-// per job, including uploads, to provide backpressure. Each call allows at most
-// 100,000 observations and a 64 MiB encoded request; no cumulative limit applies.
-// Finish all emitting goroutines before Scan returns. Errors remain sticky:
-// ignoring an emission error still fails the pending scan batch.
+// returning. Each call with one or more results uploads immediately and waits
+// for backend acknowledgement. Calls are serialized per job to provide
+// backpressure. The first accepted push terminalizes each included target; emit
+// each target once, as soon as its scan finishes. The backend ignores later
+// pushes for that target. Finish all emitting goroutines before Scan returns.
+// Errors remain sticky: ignoring an emission error still fails the pending scan
+// batch.
 type Emitter = contract.Emitter
 
-// Result groups observations for one original input Target. ErrorMessage is
-// optional and reserved for future protocol support; it is not uploaded yet.
+// Result reports the complete final outcome for one original input Target.
+// Empty Items with no ErrorMessage reports no observations and is still
+// uploaded. A result may contain Items or ErrorMessage, never both.
 type Result[T any] = contract.Result[T]
 
-// DNSResult groups DNS observations for one original input Target. Multiple
-// emissions for the same target are supported. Its own-domain record is optional
-// in each call, may appear at most once across that call's wrappers, and is never
-// synthesized. Repeated descendant observations are preserved within a call.
-// Records are complete observations:
-// repeated records across calls replace previous metadata rather than merge it.
+// DNSResult reports the complete DNS outcome for one original input Target.
+// The SDK does not require or synthesize the assigned domain's record; backend
+// validation decides which payloads it accepts. Repeated descendant observations
+// are preserved. Records are complete observations; backend projection replaces
+// scanner-owned metadata rather than merging it.
 type DNSResult = Result[DNSRecord]
 
-// ServiceResult groups service observations for one original input Target.
+// ServiceResult reports the complete service outcome for one original input
+// Target.
 // A service with an empty Host uses the original assignment's host.
 type ServiceResult = Result[Service]
 
-// FindingResult groups vulnerability observations for one original input Target.
+// FindingResult reports the complete vulnerability outcome for one original
+// input Target.
 type FindingResult = Result[Finding]

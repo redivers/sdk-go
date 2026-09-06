@@ -13,9 +13,8 @@ import (
 
 // Client owns backend RPCs and the native-to-wire conversion boundary.
 type Client struct {
-	rpc            networkscanconnect.ScannerServiceClient
-	requestTimeout time.Duration
-	retryPolicy    contract.RetryPolicy
+	rpc         networkscanconnect.ScannerServiceClient
+	retryPolicy contract.RetryPolicy
 }
 
 // New captures connection settings without changing the caller's HTTP client.
@@ -33,12 +32,10 @@ func New(token, serverURL string, httpClient *http.Client, requestTimeout time.D
 	// RPC endpoints are exact; redirects must never forward authentication.
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	policy.RetryableStatusCodes = slices.Clone(policy.RetryableStatusCodes)
-	return &Client{rpc: networkscanconnect.NewScannerServiceClient(&client, serverURL, connect.WithInterceptors(interceptor)), requestTimeout: requestTimeout, retryPolicy: policy}
+	return &Client{rpc: networkscanconnect.NewScannerServiceClient(&client, serverURL, connect.WithInterceptors(interceptor)), retryPolicy: policy}
 }
 
-// retry bounds the whole operation, including backoff and the final attempt.
+// retry applies the configured policy while the caller context bounds the operation.
 func (c *Client) retry(ctx context.Context, fn func(context.Context) error) error {
-	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
-	defer cancel()
 	return retry(c.retryPolicy, ctx, func() error { return fn(ctx) })
 }

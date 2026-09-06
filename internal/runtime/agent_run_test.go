@@ -137,7 +137,33 @@ func TestAgentRunBoundsConcurrencyAndDrainsParentCancellation(t *testing.T) {
 			close(release)
 		}
 	}()
-	s := &agentServer{job: agentTestJob()}
+	var claims atomic.Int32
+	s := &agentServer{
+		poll: func(ctx context.Context) (*pb.Job, error) {
+			index := claims.Add(1)
+			if index > 2 {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			job := agentTestJob()
+			job.JobId = fmt.Sprintf("job-%d", index)
+			job.RunId = fmt.Sprintf("run-%d", index)
+			job.Targets[0].AssetScanId = ptr(fmt.Sprintf("asset-%d", index))
+			return job, nil
+		},
+		validateID: func(jobID, runID string) {
+			if (jobID != "job-1" || runID != "run-1") && (jobID != "job-2" || runID != "run-2") {
+				t.Errorf("callback identity = %q/%q", jobID, runID)
+			}
+		},
+		push: func(_ context.Context, req *pb.PushServicesRequest) (*pb.PushServicesResponse, error) {
+			wantAsset := map[string]string{"job-1": "asset-1", "job-2": "asset-2"}[req.JobId]
+			if len(req.Results) != 1 || req.Results[0].Target.GetAssetScanId() != wantAsset {
+				t.Errorf("push target for %q = %v; want %q", req.JobId, req.Results, wantAsset)
+			}
+			return &pb.PushServicesResponse{Success: true}, nil
+		},
+	}
 	var running, maximum atomic.Int32
 	a := newAgentTest(t, s, func(ctx context.Context, targets []contract.Target, emit contract.Emitter) error {
 		n := running.Add(1)

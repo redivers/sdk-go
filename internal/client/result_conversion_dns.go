@@ -10,8 +10,8 @@ import (
 	"golang.org/x/net/idna"
 )
 
-// Each chunk contains only observed records. The target's own-domain record is
-// optional; completing an empty DNS scan must not replace observed metadata.
+// Preserve exactly the scanner's observed records and never fabricate an
+// assigned-domain record.
 func toProtoDNSRecords(domain string, records []contract.DNSRecord) ([]*pb.DnsRecord, error) {
 	assigned, err := normalizedDomain(domain)
 	if err != nil {

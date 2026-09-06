@@ -7,40 +7,28 @@ import (
 	"github.com/redivers/sdk-go/internal/contract"
 )
 
-// Limits apply to one typed push, including all original target echoes.
-const (
-	maxEmissionBytes   = 64 << 20
-	maxEmissionRecords = 100_000
-)
-
 type emissionGroup[T any] struct {
 	target       *pb.JobTarget
+	errorMessage *string
 	observations []T
 }
 
-// Validate all references and the total count before allocating conversions.
+// Validate all references before allocating conversions.
 // Preserve first-appearance order while combining wrappers for one target; the
-// wire protocol accepts each target only once within a request.
+// wire protocol accepts each target only once within a request. Keep groups
+// with no observations or error because they are explicit successful outcomes.
 func groupEmissionResults[T any](a *Assignment, results []contract.Result[T]) ([]emissionGroup[T], error) {
-	count := 0
 	for index, result := range results {
 		if _, err := a.resolveTarget(result.Target); err != nil {
 			return nil, fmt.Errorf("result %d: %w", index, err)
 		}
-		if len(result.Items) > maxEmissionRecords-count {
-			return nil, fmt.Errorf("rediver: results exceed the per-call limit (100000 records)")
+		if result.ErrorMessage != nil && len(result.Items) > 0 {
+			return nil, fmt.Errorf("rediver: result %d cannot contain both ErrorMessage and Items", index)
 		}
-		count += len(result.Items)
-	}
-	if count == 0 {
-		return nil, nil
 	}
 	var groups []emissionGroup[T]
 	positions := make(map[int]int)
-	for _, result := range results {
-		if len(result.Items) == 0 {
-			continue
-		}
+	for resultIndex, result := range results {
 		index, _ := a.resolveTarget(result.Target)
 		position, exists := positions[index]
 		if !exists {
@@ -48,7 +36,25 @@ func groupEmissionResults[T any](a *Assignment, results []contract.Result[T]) ([
 			positions[index] = position
 			groups = append(groups, emissionGroup[T]{target: a.job.Targets[index]})
 		}
-		groups[position].observations = append(groups[position].observations, result.Items...)
+		group := &groups[position]
+		if result.ErrorMessage != nil {
+			if group.errorMessage != nil {
+				return nil, fmt.Errorf("rediver: result %d repeats ErrorMessage for the same target", resultIndex)
+			}
+			if len(group.observations) > 0 {
+				return nil, fmt.Errorf("rediver: result %d conflicts with Items for the same target", resultIndex)
+			}
+			message := *result.ErrorMessage
+			group.errorMessage = &message
+			continue
+		}
+		if len(result.Items) == 0 {
+			continue
+		}
+		if group.errorMessage != nil {
+			return nil, fmt.Errorf("rediver: result %d conflicts with ErrorMessage for the same target", resultIndex)
+		}
+		group.observations = append(group.observations, result.Items...)
 	}
 	return groups, nil
 }

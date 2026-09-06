@@ -9,7 +9,6 @@ import (
 	pb "buf.build/gen/go/rediver/api/protocolbuffers/go/networkscan"
 	"connectrpc.com/connect"
 	"github.com/redivers/sdk-go/internal/contract"
-	"google.golang.org/protobuf/proto"
 )
 
 func (c *Client) PushDomains(ctx context.Context, a *Assignment, results ...contract.DNSResult) error {
@@ -22,16 +21,16 @@ func (c *Client) PushDomains(ctx context.Context, a *Assignment, results ...cont
 	}
 	wire := make([]*pb.DomainResult, 0, len(groups))
 	for index, group := range groups {
-		records, err := toProtoDNSRecords(group.target.GetDomain(), group.observations)
-		if err != nil {
-			return fmt.Errorf("target %d: %w", index, err)
+		var records []*pb.DnsRecord
+		if len(group.observations) > 0 {
+			records, err = toProtoDNSRecords(group.target.GetDomain(), group.observations)
+			if err != nil {
+				return fmt.Errorf("target %d: %w", index, err)
+			}
 		}
-		wire = append(wire, &pb.DomainResult{Target: group.target, Domains: records})
+		wire = append(wire, &pb.DomainResult{Target: group.target, Domains: records, ErrorMessage: group.errorMessage})
 	}
 	request := &pb.PushDomainsRequest{JobId: a.job.JobId, RunId: a.job.RunId, Results: wire}
-	if err := checkEmissionSize(request); err != nil {
-		return err
-	}
 	client := c.rpc
 	return c.upload(ctx, func(ctx context.Context, key string) (bool, error) {
 		response, err := client.PushDomains(ctx, pushRequest(request, key))
@@ -53,12 +52,9 @@ func (c *Client) PushServices(ctx context.Context, a *Assignment, results ...con
 		if err != nil {
 			return fmt.Errorf("target %d: %w", index, err)
 		}
-		wire = append(wire, &pb.ServiceResult{Target: group.target, Services: services})
+		wire = append(wire, &pb.ServiceResult{Target: group.target, Services: services, ErrorMessage: group.errorMessage})
 	}
 	request := &pb.PushServicesRequest{JobId: a.job.JobId, RunId: a.job.RunId, Results: wire}
-	if err := checkEmissionSize(request); err != nil {
-		return err
-	}
 	client := c.rpc
 	return c.upload(ctx, func(ctx context.Context, key string) (bool, error) {
 		response, err := client.PushServices(ctx, pushRequest(request, key))
@@ -80,24 +76,14 @@ func (c *Client) PushFindings(ctx context.Context, a *Assignment, results ...con
 		if err != nil {
 			return fmt.Errorf("target %d: %w", index, err)
 		}
-		wire = append(wire, &pb.FindingResult{Target: group.target, Findings: findings})
+		wire = append(wire, &pb.FindingResult{Target: group.target, Findings: findings, ErrorMessage: group.errorMessage})
 	}
 	request := &pb.PushFindingsRequest{JobId: a.job.JobId, RunId: a.job.RunId, Results: wire}
-	if err := checkEmissionSize(request); err != nil {
-		return err
-	}
 	client := c.rpc
 	return c.upload(ctx, func(ctx context.Context, key string) (bool, error) {
 		response, err := client.PushFindings(ctx, pushRequest(request, key))
 		return response != nil && response.Msg.GetSuccess(), err
 	})
-}
-
-func checkEmissionSize(request proto.Message) error {
-	if proto.Size(request) > maxEmissionBytes {
-		return fmt.Errorf("rediver: results exceed the per-call limit (64 MiB encoded request)")
-	}
-	return nil
 }
 
 // A converted request and its fresh key remain fixed across transport retries.

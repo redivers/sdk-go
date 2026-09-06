@@ -19,6 +19,12 @@ func scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter
 		if err != nil {
 			var dnsErr *net.DNSError
 			if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+				if emitErr := emitter.EmitDomains(rediver.DNSResult{
+					Target:       target,
+					ErrorMessage: rediver.Ptr(dnsErr.Error()),
+				}); emitErr != nil {
+					return emitErr
+				}
 				continue
 			}
 			return fmt.Errorf("resolve %s: %w", target.Domain, err)

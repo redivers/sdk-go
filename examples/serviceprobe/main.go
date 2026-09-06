@@ -38,6 +38,7 @@ func scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter
 	defer ticker.Stop()
 	dialer := net.Dialer{Timeout: 2 * time.Second}
 	for _, target := range targets {
+		services := make([]rediver.Service, 0)
 		for _, port := range target.Ports {
 			select {
 			case <-ctx.Done():
@@ -53,12 +54,12 @@ func scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter
 			}
 			conn.Close()
 			// Host defaults to the assigned target's host when omitted.
-			if err := emitter.EmitServices(rediver.ServiceResult{
-				Target: target,
-				Items:  []rediver.Service{{Port: port, Transport: "tcp"}},
-			}); err != nil {
-				return err
-			}
+			services = append(services, rediver.Service{Port: port, Transport: "tcp"})
+		}
+		// Emit exactly once for the target. An empty Items slice is the final,
+		// successful result when every assigned port is closed.
+		if err := emitter.EmitServices(rediver.ServiceResult{Target: target, Items: services}); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -38,15 +38,14 @@ func scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter
 		if err != nil {
 			return err
 		}
+		result := rediver.FindingResult{Target: target}
 		if finding != nil {
-			results = append(results, rediver.FindingResult{
-				Target: target,
-				Items:  []rediver.Finding{*finding},
-			})
+			result.Items = []rediver.Finding{*finding}
 		}
+		results = append(results, result)
 	}
-	// Emit the collected result sets across targets in one call. A bulk engine
-	// can supply the same shape with several findings in each inner slice.
+	// Include every target. An empty Items slice is a successful scan with no
+	// findings. A bulk engine can supply several findings in each inner slice.
 	return emitter.EmitFindings(results...)
 }
 
