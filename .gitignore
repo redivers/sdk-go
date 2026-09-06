@@ -1,6 +1,4 @@
 .env
-docs
-plans
 **/CLAUDE.md
 !CLAUDE.md
 .idea
@@ -17,12 +15,10 @@ plans
 *.dylib
 *.test
 *.out
-# Go build binaries from examples (go build ./examples/*)
-/ci-scanner
-/direct-job
-/multi-scanner
+# Go binaries built from examples (go build ./examples/*)
 /serviceprobe
 /subdomain
-/task
 /vulnscan
 .worktrees/
+/plans/
+/docs/

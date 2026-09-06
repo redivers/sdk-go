@@ -1,110 +1,87 @@
-// Example vulnerability scanner demonstrating finding reporting with the Rediver SDK.
 package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
+	"net"
+	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
+	"syscall"
 	"time"
 
-	"github.com/joho/godotenv"
-
-	"github.com/redivers/sdk-go"
+	rediver "github.com/redivers/sdk-go"
 )
 
 func main() {
-	if err := godotenv.Load(".env"); err != nil {
-		log.Fatalf("Error loading .env file %v", err)
-	}
-
-	scanner := rediver.NewScanner("vuln_scan",
-		[]rediver.TargetType{rediver.TargetTypeDomain, rediver.TargetTypeService},
-		scanVulnerabilities,
-		rediver.WithParam(
-			rediver.StringParam("severity_threshold").
-				Label("Severity Threshold").
-				Description("Minimum severity to report").
-				Default("low").
-				Build(),
-		),
-		rediver.WithParam(
-			rediver.BoolParam("active_scan").
-				Label("Active Scan").
-				Description("Perform active vulnerability testing").
-				Default(false).
-				Build(),
-		),
-		rediver.WithParam(
-			rediver.IntParam("rate_limit").
-				Label("Rate Limit").
-				Description("Maximum requests per second").
-				Default(10).
-				Build(),
-		),
-	)
-
-	agent, err := rediver.NewAgent(os.Getenv("REDIVER_TOKEN"), scanner)
+	agent, err := rediver.NewAgent(os.Getenv("REDIVER_TOKEN"),
+		rediver.ScanFunc(scan))
 	if err != nil {
-		log.Fatalf("create agent: %v", err)
+		log.Fatal(err)
 	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-
 	if err := agent.Run(ctx); err != nil {
-		log.Fatalf("run: %v", err)
+		log.Fatal(err)
 	}
-
-	log.Println("task complete, token revoked")
 }
 
-func scanVulnerabilities(ctx context.Context, job rediver.Job, emit func(rediver.Result)) error {
-	logger := job.Logger()
-	severityThreshold := job.Param("severity_threshold").StringOr("low")
-	activeScan := job.Param("active_scan").BoolOr(false)
-	rateLimit := job.Param("rate_limit").IntOr(10)
-
-	logger.Info("starting vuln scan", "threshold", severityThreshold, "active", activeScan, "rate_limit", rateLimit)
-
-	var findings []rediver.WebFinding
-	for _, svc := range job.Services() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+// Scan receives the entire assigned batch. This small example checks targets in
+// sequence; a bulk scanning engine can process the whole list in one call.
+func scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter) error {
+	results := make([]rediver.FindingResult, 0, len(targets))
+	for _, target := range targets {
+		finding, err := scanCertificate(ctx, target)
+		if err != nil {
+			return err
 		}
-
-		target := svc.URL
-		if target == "" {
-			target = fmt.Sprintf("%s:%d", svc.Host, svc.Port)
+		result := rediver.FindingResult{Target: target}
+		if finding != nil {
+			result.Items = []rediver.Finding{*finding}
 		}
-
-		findings = append(findings,
-			rediver.WebFinding{
-				Name: "SQL Injection", Severity: rediver.SeverityCritical,
-				Endpoint: fmt.Sprintf("%s/api/login", target),
-				Category: "injection", RuleID: "sqli-001",
-				CWEs: []string{"CWE-89"}, CVSSScore: 9.8,
-				Requests: []rediver.HTTPRequest{
-					{
-						RawRequest:  "POST /api/login HTTP/1.1\nHost: " + svc.Host + "\n\n{\"username\":\"admin' OR '1'='1\"}",
-						RawResponse: "HTTP/1.1 200 OK\n\n{\"success\":true}",
-					},
-				},
-			},
-			rediver.WebFinding{
-				Name: "Reflected XSS", Severity: rediver.SeverityHigh,
-				Endpoint: fmt.Sprintf("%s/search?q=xss", target),
-				Category: "xss", RuleID: "xss-reflected-001",
-				CWEs: []string{"CWE-79"}, CVSSScore: 6.1,
-			},
-		)
-
-		time.Sleep(200 * time.Millisecond)
+		results = append(results, result)
 	}
+	// Include every target. An empty Items slice is a successful scan with no
+	// findings. A bulk engine can supply several findings in each inner slice.
+	return emitter.EmitFindings(results...)
+}
 
-	emit(rediver.WebFindings(findings...))
-	return nil
+// This check inspects certificate expiry on HTTPS targets only.
+func scanCertificate(ctx context.Context, target rediver.Target) (*rediver.Finding, error) {
+	endpoint := target.URL
+	if endpoint == "" && target.Port == 443 {
+		endpoint = "https://" + net.JoinHostPort(target.Host, "443")
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme != "https" {
+		return nil, nil
+	}
+	dialer := tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: 10 * time.Second},
+		// Inspect the presented certificate even when it is expired.
+		// This scanner sends no credentials or application data.
+		Config: &tls.Config{InsecureSkipVerify: true, ServerName: target.Host},
+	}
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
+	if err != nil {
+		return nil, err
+	}
+	state := conn.(*tls.Conn).ConnectionState()
+	_ = conn.Close()
+	if len(state.PeerCertificates) == 0 || !time.Now().After(state.PeerCertificates[0].NotAfter) {
+		return nil, nil
+	}
+	cert := state.PeerCertificates[0]
+	return &rediver.Finding{
+		Name: "Expired TLS certificate", Severity: rediver.SeverityMedium,
+		RuleID: "tls-certificate-expired", Endpoint: endpoint,
+		Description: fmt.Sprintf("Certificate expired at %s.", cert.NotAfter.UTC().Format(time.RFC3339)),
+		Remediation: "Renew and deploy a valid TLS certificate.",
+	}, nil
 }

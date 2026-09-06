@@ -1,4 +1,3 @@
 package rediver
 
-// SdkVersion is the current SDK version sent during agent registration.
-const SdkVersion = "1.0.0"
+const sdkVersion = "2.0.0-dev"
