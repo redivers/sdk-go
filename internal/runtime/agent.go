@@ -39,9 +39,11 @@ func NewAgent(token string, scanner contract.Scanner, cfg Config) (*Agent, error
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	return &Agent{cfg: cfg, scanner: scanner,
-		client:   client.New(token, cfg.ServerURL, cfg.HTTPClient, cfg.RequestTimeout, cfg.RetryPolicy),
-		runnerID: cfg.RunnerID}, nil
+	return &Agent{
+		cfg:     cfg,
+		scanner: scanner,
+		client:  client.New(token, cfg.ServerURL, cfg.HTTPClient, cfg.RequestTimeout, cfg.RetryPolicy),
+	}, nil
 }
 
 func validateScanner(scanner contract.Scanner) error {
@@ -58,8 +60,11 @@ func validateScanner(scanner contract.Scanner) error {
 	return nil
 }
 
-// RunnerID is safe to read while registration updates the runner identity.
-func (a *Agent) RunnerID() string { a.mu.Lock(); defer a.mu.Unlock(); return a.runnerID }
+func (a *Agent) currentRunnerID() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.runnerID
+}
 
 // Stop immediately cancels polling and active scan work.
 func (a *Agent) Stop() {
@@ -108,9 +113,7 @@ func (a *Agent) withSession(ctx context.Context, drain bool, run func(*agentSess
 	a.stop = func() { s.cancel(context.Canceled) }
 	a.mu.Unlock()
 	defer func() { s.cancel(context.Canceled); a.mu.Lock(); a.stop = nil; a.mu.Unlock() }()
-	runnerID, err := a.client.Register(s.poll, client.Registration{
-		RunnerID: a.cfg.RunnerID, Hostname: a.cfg.Hostname, IPAddress: a.cfg.IPAddress, Version: a.cfg.Version,
-	})
+	runnerID, err := a.client.Register(s.poll, client.Registration{Hostname: a.cfg.Hostname, Version: a.cfg.Version})
 	if err != nil {
 		return err
 	}
@@ -118,7 +121,7 @@ func (a *Agent) withSession(ctx context.Context, drain bool, run func(*agentSess
 	a.runnerID = runnerID
 	a.mu.Unlock()
 	runner := startHeartbeat(s.work, a.cfg.HeartbeatInterval, func(ctx context.Context) error {
-		return a.client.Heartbeat(ctx, a.RunnerID())
+		return a.client.Heartbeat(ctx, a.currentRunnerID())
 	}, func(err error) { s.cancel(fmt.Errorf("runner heartbeat: %w", err)) })
 	defer func() { err = errors.Join(err, runner.stop()) }()
 	return run(s)

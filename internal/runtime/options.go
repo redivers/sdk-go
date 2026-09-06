@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,9 +23,7 @@ type Config struct {
 	JobHeartbeatInterval time.Duration
 	ShutdownTimeout      time.Duration
 	RequestTimeout       time.Duration
-	RunnerID             string
 	Hostname             string
-	IPAddress            string
 	Version              string
 	Logger               *slog.Logger
 	RetryPolicy          contract.RetryPolicy
@@ -72,9 +69,6 @@ func (c Config) validate() error {
 	if c.MaxConcurrency <= 0 {
 		return fmt.Errorf("%w: max concurrency must be positive", contract.ErrInvalidConfig)
 	}
-	if c.IPAddress != "" && net.ParseIP(c.IPAddress) == nil {
-		return fmt.Errorf("%w: IP address must be a valid IPv4 or IPv6 address", contract.ErrInvalidConfig)
-	}
 	for _, setting := range []struct {
 		name     string
 		duration time.Duration
@@ -97,11 +91,6 @@ func (c Config) validate() error {
 	// A disabled policy needs no backoff; policies that retry must remain bounded.
 	if p.MaxAttempts > 1 && (p.InitialBackoff == 0 || p.MaxBackoff == 0 || p.BackoffMultiplier < 1) {
 		return fmt.Errorf("%w: retries require positive backoffs and a multiplier of at least one", contract.ErrInvalidConfig)
-	}
-	for _, status := range p.RetryableStatusCodes {
-		if status < 100 || status > 599 {
-			return fmt.Errorf("%w: retry HTTP status must be between 100 and 599", contract.ErrInvalidConfig)
-		}
 	}
 	return nil
 }

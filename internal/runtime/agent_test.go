@@ -264,7 +264,7 @@ func newAgentTest(t *testing.T, s *agentServer, handler func(context.Context, []
 	}))
 	t.Cleanup(server.Close)
 	cfg := DefaultConfig("test")
-	cfg.ServerURL, cfg.HTTPClient, cfg.RetryPolicy = server.URL, server.Client(), contract.NoRetry()
+	cfg.ServerURL, cfg.HTTPClient, cfg.RetryPolicy = server.URL, server.Client(), contract.RetryPolicy{MaxAttempts: 1}
 	cfg.HeartbeatInterval, cfg.JobHeartbeatInterval = 10*time.Millisecond, 10*time.Millisecond
 	cfg.PollInterval, cfg.RequestTimeout, cfg.ShutdownTimeout = time.Millisecond, time.Second, time.Second
 	for _, configure := range opts {
@@ -308,7 +308,7 @@ func TestAgentTransportTokenEnvironmentAndExplicitPrecedence(t *testing.T) {
 			defer server.Close()
 			t.Setenv("REDIVER_URL", server.URL)
 			cfg := DefaultConfig("test")
-			cfg.HTTPClient, cfg.RetryPolicy = server.Client(), contract.NoRetry()
+			cfg.HTTPClient, cfg.RetryPolicy = server.Client(), contract.RetryPolicy{MaxAttempts: 1}
 			agent, err := NewAgent(test.token, transportTestScanner(), cfg)
 			if err != nil {
 				t.Fatal(err)

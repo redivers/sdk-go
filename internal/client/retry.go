@@ -13,49 +13,31 @@ import (
 	"github.com/redivers/sdk-go/internal/contract"
 )
 
-// isRetryableStatus returns true if the status code is retryable.
-func isRetryableStatus(p contract.RetryPolicy, statusCode int) bool {
-	for _, code := range p.RetryableStatusCodes {
-		if code == statusCode {
-			return true
-		}
-	}
-	return false
-}
-
 // isRetryableError returns true if the error is retryable.
-func isRetryableError(p contract.RetryPolicy, err error) bool {
+func isRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
 
+	// A canceled caller or per-attempt deadline is local control flow, even when
+	// Connect wraps it as a DeadlineExceeded RPC error.
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 
-	// Connect errors survive wrapping by the operation that failed. Translate
-	// transient codes to the existing policy's HTTP statuses.
+	// Connect errors survive wrapping by the operation that failed.
 	var rpcErr *connect.Error
 	if errors.As(err, &rpcErr) {
 		switch rpcErr.Code() {
-		case connect.CodeResourceExhausted:
-			return isRetryableStatus(p, 429)
-		case connect.CodeUnavailable:
-			return isRetryableStatus(p, 503)
-		case connect.CodeDeadlineExceeded:
-			return isRetryableStatus(p, 504)
+		case connect.CodeResourceExhausted, connect.CodeUnavailable, connect.CodeDeadlineExceeded:
+			return true
 		default:
 			return false
 		}
 	}
 
-	// Check for network errors
 	var netErr net.Error
-	if errors.As(err, &netErr) {
-		return true
-	}
-
-	return false
+	return errors.As(err, &netErr)
 }
 
 // backoffDuration calculates the backoff duration for a given attempt.
@@ -66,14 +48,13 @@ func backoffDuration(p contract.RetryPolicy, attempt int) time.Duration {
 	}
 
 	backoff := float64(p.InitialBackoff) * math.Pow(p.BackoffMultiplier, float64(attempt-1))
-	if backoff > float64(p.MaxBackoff) {
-		backoff = float64(p.MaxBackoff)
-	}
-
 	if p.Jitter {
-		// Add up to 25% jitter
+		// Add up to 25% jitter before capping the final delay.
 		jitter := backoff * 0.25 * rand.Float64()
 		backoff += jitter
+	}
+	if backoff > float64(p.MaxBackoff) {
+		backoff = float64(p.MaxBackoff)
 	}
 
 	return time.Duration(backoff)
@@ -97,12 +78,13 @@ func retry(p contract.RetryPolicy, ctx context.Context, fn func() error) error {
 
 		lastErr = err
 
-		// Check if error is retryable
-		if !isRetryableError(p, err) {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if !isRetryableError(err) {
 			return err
 		}
 
-		// Don't sleep on the last attempt
 		if attempt < p.MaxAttempts {
 			backoff := backoffDuration(p, attempt)
 
@@ -114,20 +96,5 @@ func retry(p contract.RetryPolicy, ctx context.Context, fn func() error) error {
 		}
 	}
 
-	return &retryExhaustedError{
-		Err:        lastErr,
-		Attempt:    p.MaxAttempts,
-		MaxAttempt: p.MaxAttempts,
-	}
+	return fmt.Errorf("retry failed after %d attempts: %w", p.MaxAttempts, lastErr)
 }
-
-// retryExhaustedError preserves the final backend cause for classification.
-type retryExhaustedError struct {
-	Err                 error
-	Attempt, MaxAttempt int
-}
-
-func (e *retryExhaustedError) Error() string {
-	return fmt.Sprintf("retryable error (attempt %d/%d, retry in 0s): %v", e.Attempt, e.MaxAttempt, e.Err)
-}
-func (e *retryExhaustedError) Unwrap() error { return e.Err }

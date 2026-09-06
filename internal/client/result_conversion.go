@@ -39,5 +39,3 @@ func resultTimestamp(value time.Time, field string) (*timestamppb.Timestamp, err
 	}
 	return stamp, nil
 }
-
-func ptr[T any](value T) *T { return &value }

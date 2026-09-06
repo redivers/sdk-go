@@ -29,10 +29,9 @@ type RawHTTPRequest = contract.RawHTTPRequest
 type FindingSeverity = contract.FindingSeverity
 
 const (
-	SeverityUnspecified = contract.SeverityUnspecified
-	SeverityInfo        = contract.SeverityInfo
-	SeverityLow         = contract.SeverityLow
-	SeverityMedium      = contract.SeverityMedium
-	SeverityHigh        = contract.SeverityHigh
-	SeverityCritical    = contract.SeverityCritical
+	SeverityInfo     = contract.SeverityInfo
+	SeverityLow      = contract.SeverityLow
+	SeverityMedium   = contract.SeverityMedium
+	SeverityHigh     = contract.SeverityHigh
+	SeverityCritical = contract.SeverityCritical
 )

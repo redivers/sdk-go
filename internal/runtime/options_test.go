@@ -39,34 +39,6 @@ func TestAgentConfigDefaults(t *testing.T) {
 	if config.Hostname != hostname || config.Version != "test-version" {
 		t.Errorf("default registration metadata: hostname=%q, version=%q", config.Hostname, config.Version)
 	}
-	if config.IPAddress != "" {
-		t.Errorf("default configuration must not discover an IP address: %q", config.IPAddress)
-	}
-}
-
-func TestAgentConfigIPAddress(t *testing.T) {
-	t.Setenv("REDIVER_URL", "")
-	for _, address := range []string{"", "192.0.2.42", "2001:db8::42"} {
-		t.Run(address, func(t *testing.T) {
-			config := DefaultConfig("test-version")
-			config.IPAddress = address
-			if err := config.validate(); err != nil {
-				t.Errorf("IP address %q should be valid: %v", address, err)
-			}
-			if config.IPAddress != address {
-				t.Errorf("IP address changed: got %q, want %q", config.IPAddress, address)
-			}
-		})
-	}
-	for _, address := range []string{"example.com", "192.0.2.42:443", "999.0.0.1", " 192.0.2.42 ", "192.0.2.0/24"} {
-		t.Run(address, func(t *testing.T) {
-			config := DefaultConfig("test-version")
-			config.IPAddress = address
-			if err := config.validate(); !errors.Is(err, contract.ErrInvalidConfig) {
-				t.Errorf("IP address %q: got %v, want contract.ErrInvalidConfig", address, err)
-			}
-		})
-	}
 }
 
 func TestAgentConfigServerURLPrecedence(t *testing.T) {
@@ -136,7 +108,6 @@ func TestAgentConfigRejectsInvalidRetryPolicies(t *testing.T) {
 		"shrinking backoff":   func(p *contract.RetryPolicy) { p.BackoffMultiplier = 0.5 },
 		"NaN multiplier":      func(p *contract.RetryPolicy) { p.BackoffMultiplier = math.NaN() },
 		"infinite multiplier": func(p *contract.RetryPolicy) { p.BackoffMultiplier = math.Inf(1) },
-		"invalid status":      func(p *contract.RetryPolicy) { p.RetryableStatusCodes = []int{600} },
 	}
 	for name, mutate := range policies {
 		t.Run(name, func(t *testing.T) {
@@ -151,25 +122,13 @@ func TestAgentConfigRejectsInvalidRetryPolicies(t *testing.T) {
 	}
 }
 
-func TestAgentConfigRetryPresets(t *testing.T) {
+func TestAgentConfigDefaultRetryPolicy(t *testing.T) {
 	t.Setenv("REDIVER_URL", "")
-	for name, test := range map[string]struct {
-		policy   contract.RetryPolicy
-		attempts int
-	}{
-		"default":    {contract.DefaultRetryPolicy(), 5},
-		"aggressive": {contract.AggressiveRetryPolicy(), 10},
-		"disabled":   {contract.NoRetry(), 1},
-	} {
-		t.Run(name, func(t *testing.T) {
-			config := DefaultConfig("test-version")
-			config.RetryPolicy = test.policy
-			if err := config.validate(); err != nil {
-				t.Fatalf("retry preset is invalid: %v", err)
-			}
-			if config.RetryPolicy.MaxAttempts != test.attempts {
-				t.Errorf("got %d attempts, want %d", config.RetryPolicy.MaxAttempts, test.attempts)
-			}
-		})
+	config := DefaultConfig("test-version")
+	if err := config.validate(); err != nil {
+		t.Fatalf("default retry policy is invalid: %v", err)
+	}
+	if config.RetryPolicy.MaxAttempts != 5 {
+		t.Errorf("got %d attempts, want 5", config.RetryPolicy.MaxAttempts)
 	}
 }

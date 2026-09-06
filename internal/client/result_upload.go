@@ -2,8 +2,6 @@ package client
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 
 	pb "buf.build/gen/go/rediver/api/protocolbuffers/go/networkscan"
@@ -32,8 +30,8 @@ func (c *Client) PushDomains(ctx context.Context, a *Assignment, results ...cont
 	}
 	request := &pb.PushDomainsRequest{JobId: a.job.JobId, RunId: a.job.RunId, Results: wire}
 	client := c.rpc
-	return c.upload(ctx, func(ctx context.Context, key string) (bool, error) {
-		response, err := client.PushDomains(ctx, pushRequest(request, key))
+	return c.upload(ctx, func(ctx context.Context) (bool, error) {
+		response, err := client.PushDomains(ctx, connect.NewRequest(request))
 		return response != nil && response.Msg.GetSuccess(), err
 	})
 }
@@ -56,8 +54,8 @@ func (c *Client) PushServices(ctx context.Context, a *Assignment, results ...con
 	}
 	request := &pb.PushServicesRequest{JobId: a.job.JobId, RunId: a.job.RunId, Results: wire}
 	client := c.rpc
-	return c.upload(ctx, func(ctx context.Context, key string) (bool, error) {
-		response, err := client.PushServices(ctx, pushRequest(request, key))
+	return c.upload(ctx, func(ctx context.Context) (bool, error) {
+		response, err := client.PushServices(ctx, connect.NewRequest(request))
 		return response != nil && response.Msg.GetSuccess(), err
 	})
 }
@@ -80,20 +78,18 @@ func (c *Client) PushFindings(ctx context.Context, a *Assignment, results ...con
 	}
 	request := &pb.PushFindingsRequest{JobId: a.job.JobId, RunId: a.job.RunId, Results: wire}
 	client := c.rpc
-	return c.upload(ctx, func(ctx context.Context, key string) (bool, error) {
-		response, err := client.PushFindings(ctx, pushRequest(request, key))
+	return c.upload(ctx, func(ctx context.Context) (bool, error) {
+		response, err := client.PushFindings(ctx, connect.NewRequest(request))
 		return response != nil && response.Msg.GetSuccess(), err
 	})
 }
 
-// A converted request and its fresh key remain fixed across transport retries.
-func (c *Client) upload(ctx context.Context, push func(context.Context, string) (bool, error)) error {
-	key := newPushIdempotencyKey()
+func (c *Client) upload(ctx context.Context, push func(context.Context) (bool, error)) error {
 	return c.retry(ctx, func(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		success, err := push(ctx, key)
+		success, err := push(ctx)
 		if err != nil {
 			return err
 		}
@@ -102,17 +98,4 @@ func (c *Client) upload(ctx context.Context, push func(context.Context, string) 
 		}
 		return nil
 	})
-}
-func newPushIdempotencyKey() string {
-	var value [16]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		panic(fmt.Sprintf("generate result request ID: %v", err))
-	}
-	return hex.EncodeToString(value[:])
-}
-
-func pushRequest[T any](message *T, key string) *connect.Request[T] {
-	request := connect.NewRequest(message)
-	request.Header().Set("Idempotency-Key", key)
-	return request
 }

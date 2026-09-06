@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"net/http"
 	"strings"
@@ -348,14 +347,10 @@ func TestPushRetryUsesBoundedAttemptContext(t *testing.T) {
 	}
 }
 
-func TestPushIdempotencyKeysAndAllWrapperSnapshotsSurviveRetries(t *testing.T) {
+func TestPushConvertedRequestSnapshotsSurviveRetries(t *testing.T) {
 	for _, kind := range []pb.Scanner{pb.Scanner_SCANNER_SUBDOMAIN, pb.Scanner_SCANNER_SERVICE_DISCOVER, pb.Scanner_SCANNER_VULNERABILITY} {
 		t.Run(kind.String(), func(t *testing.T) {
-			type received struct {
-				key string
-				msg proto.Message
-			}
-			requests := make(chan received, 3)
+			requests := make(chan proto.Message, 3)
 			var attempts atomic.Int32
 			responseError := func() error {
 				if attempts.Add(1) == 1 {
@@ -364,7 +359,7 @@ func TestPushIdempotencyKeysAndAllWrapperSnapshotsSurviveRetries(t *testing.T) {
 				return nil
 			}
 			s := &clientTestServer{
-				onPush: func(header http.Header, msg proto.Message) { requests <- received{header.Get("Idempotency-Key"), msg} },
+				onPush: func(_ http.Header, msg proto.Message) { requests <- msg },
 				domains: func(context.Context, *pb.PushDomainsRequest) (*pb.PushDomainsResponse, error) {
 					return &pb.PushDomainsResponse{Success: true}, responseError()
 				},
@@ -434,7 +429,7 @@ func TestPushIdempotencyKeysAndAllWrapperSnapshotsSurviveRetries(t *testing.T) {
 				}
 				return response, err
 			})}
-			c := New("network-token", server.URL, httpClient, time.Second, contract.RetryPolicy{MaxAttempts: 2, RetryableStatusCodes: []int{503}})
+			c := New("network-token", server.URL, httpClient, time.Second, contract.RetryPolicy{MaxAttempts: 2})
 			push := func() error {
 				switch kind {
 				case pb.Scanner_SCANNER_SUBDOMAIN:
@@ -449,11 +444,10 @@ func TestPushIdempotencyKeysAndAllWrapperSnapshotsSurviveRetries(t *testing.T) {
 				t.Fatal(err)
 			}
 			first, second := <-requests, <-requests
-			decoded, err := hex.DecodeString(first.key)
-			if err != nil || len(decoded) != 16 || first.key != second.key || !proto.Equal(first.msg, second.msg) {
-				t.Fatalf("retry changed snapshot or key: first=%v second=%v", first, second)
+			if !proto.Equal(first, second) {
+				t.Fatalf("retry changed snapshot: first=%v second=%v", first, second)
 			}
-			switch req := first.msg.(type) {
+			switch req := first.(type) {
 			case *pb.PushDomainsRequest:
 				if len(req.Results) != len(original.Targets)-1 || req.Results[2].ErrorMessage == nil || *req.Results[2].ErrorMessage != "original failure" {
 					t.Fatalf("DNS error snapshot = %v", req.Results)
@@ -495,10 +489,7 @@ func TestPushIdempotencyKeysAndAllWrapperSnapshotsSurviveRetries(t *testing.T) {
 				t.Fatal(pushErr)
 			}
 			third := <-requests
-			if third.key == first.key || third.key == "" {
-				t.Fatal("new push reused previous key")
-			}
-			switch req := third.msg.(type) {
+			switch req := third.(type) {
 			case *pb.PushDomainsRequest:
 				if len(req.Results) != 1 || !proto.Equal(req.Results[0].Target, original.Targets[3]) {
 					t.Fatalf("fresh DNS push = %v", req.Results)

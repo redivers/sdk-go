@@ -70,7 +70,7 @@ func TestRPCsPreserveRetryEligibility(t *testing.T) {
 				failure: func(context.Context, *pb.JobFailureRequest) (*pb.JobFailureResponse, error) { return nil, unavailable },
 			}
 			server := startClientServer(t, s)
-			policy := contract.RetryPolicy{MaxAttempts: 3, RetryableStatusCodes: []int{503}}
+			policy := contract.RetryPolicy{MaxAttempts: 3}
 			c := New("network-token", server.URL, server.Client(), time.Second, policy)
 			a := preparedAssignment(t, clientTestJob())
 			ctx := context.Background()

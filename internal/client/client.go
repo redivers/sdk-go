@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"net/http"
-	"slices"
 	"time"
 
 	"buf.build/gen/go/rediver/api/connectrpc/go/networkscan/networkscanconnect"
@@ -31,7 +30,6 @@ func New(token, serverURL string, httpClient *http.Client, requestTimeout time.D
 	client := *httpClient
 	// RPC endpoints are exact; redirects must never forward authentication.
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	policy.RetryableStatusCodes = slices.Clone(policy.RetryableStatusCodes)
 	return &Client{rpc: networkscanconnect.NewScannerServiceClient(&client, serverURL, connect.WithInterceptors(interceptor)), retryPolicy: policy}
 }
 

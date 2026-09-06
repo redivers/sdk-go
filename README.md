@@ -1,26 +1,20 @@
 # Rediver Go SDK
 
-Implement one `Scanner` interface: receive a **batch of targets** and emit typed
-SDK result sets. The SDK handles registration, polling, target assignment,
-uploads, heartbeats, retries and job completion. The NetworkAgent token determines
-the scanner type on the backend; scanner code does not select an enum or a
-scanner-specific constructor.
-
-Scanner projects use one import, `github.com/redivers/sdk-go`, for the agent,
-native inputs, results and configuration. Backend protocol types stay internal.
-
-This breaking update uses the `networkscan` contract from the backend's
-`network-scan` implementation.
+Build a Rediver network scanner by implementing one batch interface. The SDK
+registers the agent, polls for work, maintains heartbeats, uploads results, and
+reports job completion. The NetworkAgent token determines the scanner kind;
+scanner code does not select a scanner enum or use a kind-specific constructor.
 
 ```sh
 go get github.com/redivers/sdk-go
 ```
 
-Use a revision containing this migration. The module path remains
-`github.com/redivers/sdk-go`; this change does not publish a release.
-Deploy the backend realtime migration and implementation before upgrading scanners.
+Scanner projects use the root `github.com/redivers/sdk-go` package for the
+agent, inputs, results, and configuration.
 
 ## Quick start
+
+This DNS scanner reports one final result for every assigned target:
 
 ```go
 package main
@@ -28,6 +22,7 @@ package main
 import (
     "context"
     "errors"
+    "fmt"
     "log"
     "net"
     "os"
@@ -43,18 +38,18 @@ func scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter
             var dnsErr *net.DNSError
             if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
                 if emitErr := emitter.EmitDomains(rediver.DNSResult{
-                    Target: target,
+                    Target:       target,
                     ErrorMessage: rediver.Ptr(dnsErr.Error()),
                 }); emitErr != nil {
                     return emitErr
                 }
                 continue
             }
-            return err
+            return fmt.Errorf("resolve %s: %w", target.Domain, err)
         }
         if err := emitter.EmitDomains(rediver.DNSResult{
             Target: target,
-            Items: []rediver.DNSRecord{{Domain: target.Domain, IPs: ips}},
+            Items:  []rediver.DNSRecord{{Domain: target.Domain, IPs: ips}},
         }); err != nil {
             return err
         }
@@ -63,10 +58,14 @@ func scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter
 }
 
 func main() {
-    agent, err := rediver.NewAgent(os.Getenv("REDIVER_TOKEN"), rediver.ScanFunc(scan))
+    agent, err := rediver.NewAgent(
+        os.Getenv("REDIVER_TOKEN"),
+        rediver.ScanFunc(scan),
+    )
     if err != nil {
         log.Fatal(err)
     }
+
     ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
     defer cancel()
     if err := agent.Run(ctx); err != nil {
@@ -75,84 +74,49 @@ func main() {
 }
 ```
 
-Use a token configured for subdomain scanning to run this DNS example. Set
-`REDIVER_URL` to your backend origin, for example `http://localhost:5152`.
-The default is `https://api.rediver.ai`.
+Use a token configured for subdomain scanning with this example. Set
+`REDIVER_URL` to the backend origin when needed; the default is
+`https://api.rediver.ai`.
 
-## One scanner interface
+## Scanner inputs
 
 ```go
 type Scanner interface {
     Scan(context.Context, []Target, Emitter) error
 }
+```
 
+The SDK calls `Scan` once with all unfinished targets in one assigned job. This
+is one backend-supplied batch, not the global scan queue. A scanner can pass the
+batch to a bulk engine or schedule its targets internally. Implement `Scanner`
+on a type when the engine owns configuration or resources; use `ScanFunc` for a
+plain function.
+
+Each `Target` contains the input for its scanner kind:
+
+| Input | Fields |
+|---|---|
+| Domain | `Domain string` |
+| Service discovery | `Host string`, `Ports []int`, `Rate int` |
+| Vulnerability | `Host string`, `Port int`, and `URL string` when available |
+
+Service discovery receives validated, sorted, unique ports. `Rate` is one probe
+budget for the whole job batch and is repeated on its targets. Pass it once to a
+bulk engine or share one limiter across workers.
+
+A target also contains a private assignment reference. Put the original target,
+or a copy of it, in every emitted result. Constructing a new `Target` from its
+visible fields loses that reference.
+
+## Emit final results
+
+```go
 type Emitter interface {
     EmitDomains(...DNSResult) error
     EmitServices(...ServiceResult) error
     EmitFindings(...FindingResult) error
 }
-```
 
-The SDK calls `Scan` once with **all unfinished targets in one assigned job**.
-This is a batch supplied by the backend, not the entire global scan queue. Pass
-the list to a bulk engine in one invocation, or schedule individual targets
-inside your scanner. The SDK does not force one engine invocation per target.
-
-Implement the interface on your own type to keep engine configuration and
-resources together:
-
-```go
-type DNSScanner struct{}
-
-var _ rediver.Scanner = (*DNSScanner)(nil)
-
-func (*DNSScanner) Scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter) error {
-    return scan(ctx, targets, emitter)
-}
-
-func newDNSAgent(token string) (*rediver.Agent, error) {
-    return rediver.NewAgent(token, &DNSScanner{})
-}
-```
-
-This example reuses `scan` from the quick start. A plain function uses
-`rediver.ScanFunc(scan)` instead. Both forms share the same runtime and require no
-job IDs, run IDs, scanner enum, or reporter.
-
-`Target` contains ordinary Go fields populated for the assignment:
-
-| Scan input | Fields used by the scanning logic |
-|---|---|
-| Domain | `Domain string` |
-| Service discovery | `Host string`, `Ports []int`, `Rate int` |
-| Vulnerability | `Host string`, `Port int`, `URL string` when available |
-
-Service discovery receives validated, sorted, unique ports. `Rate` is one probe
-budget for the **whole job batch**, repeated on its targets. Pass it once to your
-bulk engine or share one limiter across workers; do not allocate that full budget
-to every target. See [serviceprobe](examples/serviceprobe). The SDK cannot meter
-requests made inside an external scanning engine.
-
-Each input also carries a private SDK reference. Set each result set's `Target`
-to the original input or a copy of it; keep it alongside each engine input when
-correlating results. Constructing a new `Target` from a hostname loses the
-assignment reference. The SDK retains the original backend target, including
-optional field presence, so scan code never constructs transport identifiers.
-
-## Emit observations
-
-Use the method matching the scanner kind configured in your token. Each result
-set pairs one assigned target with a slice of native observations:
-
-| Method | Result set |
-|---|---|
-| `EmitDomains` | `DNSResult{Target: target, Items: []DNSRecord{...}}` |
-| `EmitServices` | `ServiceResult{Target: target, Items: []Service{...}}` |
-| `EmitFindings` | `FindingResult{Target: target, Items: []Finding{...}}` |
-
-These names are aliases of the shared `Result[T]` type:
-
-```go
 type Result[T any] struct {
     Target       Target
     ErrorMessage *string
@@ -164,48 +128,30 @@ type ServiceResult = Result[Service]
 type FindingResult = Result[Finding]
 ```
 
-Use either spelling, including slices such as `[]Result[Finding]` passed to
-`EmitFindings(results...)`. All result types store observations in `Items`.
+Use the emitter method that matches the scanner kind configured for the token.
+Calling another method returns an error, even with zero arguments. On the
+matching method, zero arguments or an expanded nil or empty result slice is a
+valid no-op and sends no RPC.
 
-Every supplied result is the complete, final outcome for its target. For every
-result type, empty `Items` with a nil `ErrorMessage` explicitly reports that the
-target produced no observations. The SDK uploads that target-only result; the
-backend decides whether to accept it and how it changes target status. Set
-`ErrorMessage` when the scanner has reached a final failure for that target.
-Leave it `nil` when absent. `rediver.Ptr("")` represents an explicitly present
-empty message.
+Every supplied result is the complete, final outcome for its target:
 
-`ErrorMessage` cannot accompany non-empty `Items`, including across multiple
-result wrappers for the same target in one `Emit*` call. The SDK rejects that
-call before upload. Return an error from `Scan` for transient whole-job trouble,
-such as a crashed tool, so the SDK reports `JobFailure` instead.
+- Non-empty `Items` reports one or more observations.
+- Empty `Items` with a nil `ErrorMessage` reports a successful scan with no
+  observations. The target-only result is still uploaded.
+- A non-nil `ErrorMessage` reports a final failure for that target. It cannot
+  accompany non-empty `Items`, including across multiple wrappers for the same
+  target in one call. `rediver.Ptr("")` is an explicitly present empty message.
+- An error returned from `Scan` reports transient whole-job trouble, such as a
+  crashed external engine.
 
-For realtime reporting, emit each target once, as soon as its scan finishes:
+Return every emission error from the scanner. Emission errors are sticky, so an
+ignored error still fails the job. A result must contain an original assigned
+target; the backend decides whether its observations are valid.
 
-```go
-oneResult := rediver.FindingResult{
-    Target: target,
-    Items: []rediver.Finding{{
-        Name: "Observed vulnerability",
-        Severity: rediver.SeverityHigh,
-        RuleID: "my-rule",
-    }},
-}
-if err := emitter.EmitFindings(oneResult); err != nil {
-    return err
-}
-```
-
-An empty successful service result closes a host where no assigned port is open:
-
-```go
-if err := emitter.EmitServices(rediver.ServiceResult{Target: target}); err != nil {
-    return err
-}
-```
-
-An engine can also return a list spanning multiple assigned targets that finish
-together. For example, with findings already collected for two targets:
+For realtime reporting, emit each target once as soon as its scan finishes. A
+call containing one or more results uploads immediately and waits for backend
+acknowledgement. Calls within a job are serialized for backpressure. An engine
+may emit a batch when several targets finish together:
 
 ```go
 results := []rediver.FindingResult{
@@ -215,114 +161,73 @@ results := []rediver.FindingResult{
 return emitter.EmitFindings(results...)
 ```
 
-Each inner `Items` slice may contain multiple findings for its target. The same
-single-result and batch forms work with `EmitDomains` and `EmitServices`; see the
-[runnable examples](#examples-and-development).
-
-All three methods belong to one `Emitter`. Calling a method incompatible with the
-assigned job returns an error, even with zero arguments. Unknown payload types
-cannot be passed to these typed methods. For the matching method, zero arguments
-or an expanded nil/empty result slice is a valid no-op. Every supplied result
-must carry an original assigned `Target`; it is uploaded even when both `Items`
-and `ErrorMessage` are empty. Return emission errors from your scanner; the SDK
-remembers them so ignoring one cannot silently complete the batch.
-
 `Emitter` supports concurrent calls and snapshots accepted observations before
-returning. Finish all your goroutines before `Scan` returns and honor `ctx`.
-The emitter closes when scanning finishes; late emissions fail.
+returning. Join every goroutine that uses it before `Scan` returns and honor the
+provided context. The emitter closes when scanning finishes; late calls fail.
 
-**Each `Emit*` call with one or more results uploads immediately and waits for
-backend acknowledgement.** The first push that the backend accepts for a target
-terminalizes that target. Emit every target exactly once, including targets with
-no observations; later pushes for the same target are ignored by the backend.
-For realtime reporting, emit each target as soon as its scan finishes. Calls are
-serialized within a job to provide backpressure.
+The backend's terminal target state provides replay safety. The first accepted
+push terminalizes a target, and later pushes for that target are ignored. A lost
+acknowledgement therefore cannot apply the same projection twice. If an attempt
+fails, only unfinished targets can be assigned again; accepted outcomes remain.
 
-| Scanner outcome | Meaning |
+| Scanner outcome | Behavior |
 |---|---|
 | `Emit*()` or an empty outer result slice | No-op; no RPC is sent. |
-| `Emit*(Result{Target: target})` | Upload a target-only result with no observations or error. |
-| `Emit*` returns `nil` | Backend acknowledged the push. A later outcome for an already-terminal target remains ignored. |
-| `Scan` returns `nil` | Request job completion after every assigned target has emitted its final result. |
-| No result for an assigned target | `JobCompleted` is rejected while that target remains unfinished. |
-| `Scan` errors, panics, or is canceled | Report failure; already accepted target outcomes remain stored. |
-| An emit error occurs | Fail the job even if the scanner ignores it and returns `nil`. |
+| `Emit*(Result{Target: target})` | Upload a final result with no observations or target error. |
+| `Emit*` returns `nil` | The backend acknowledged the push. |
+| `Scan` returns `nil` | Request completion after every assigned target emitted its final result. |
+| An assigned target has no result | Completion is rejected while that target remains unfinished. |
+| `Scan` errors, panics, or is canceled | Report job failure; already accepted target outcomes remain stored. |
+| An emission fails | Fail the job even if the scanner later returns `nil`. |
 
-DNS records may describe the assigned domain or strict descendants; direct
-subdomain targets may only report themselves. The SDK does not require an
-assigned-domain record: target-only, descendant-only, and own-domain payloads
-are uploaded, and the backend applies its own acceptance rules. The SDK never
-fabricates DNS metadata. Each emitted DNS/service observation is a complete
-record; backend projection replaces its scanner-owned metadata rather than
-merging it. For services, an empty `Host` uses the assigned host.
-
-Replay safety comes from the backend, not from the client: a push naming a target
-whose scan is already terminal is ignored. A lost acknowledgement therefore does
-not repeat that push's projection, and a later `Emit*` cannot update a target
-terminalized by its first accepted push. The SDK also sets an `Idempotency-Key`
-header, fresh per push and reused across transport retries, but the networkscan
-backend does not currently read it — do not rely on it. If a job attempt fails,
-the backend may scan its unfinished targets again; accepted outcomes for finished
-targets remain. Return emission errors promptly and honor cancellation.
-
-Result models use plain strings and integers for ordinary fields. Optional values
-that need explicit presence use pointers, such as `DNSRecord.TTL`,
-`Finding.CVSSScore`, and `Certificate.Wildcard`; `rediver.Ptr(value)` is available.
-Certificate validity dates use `time.Time`. See the
-[model definitions](internal/contract/models.go) for all fields; the root SDK
-exposes these same types through aliases. Findings require a name and one of
-`SeverityInfo`, `SeverityLow`, `SeverityMedium`, `SeverityHigh`, or
-`SeverityCritical`. Include both raw request
-and response when adding `RawHTTPRequest` evidence.
+Result models use strings and integers for ordinary fields. Values requiring
+explicit presence use pointers, such as `DNSRecord.TTL`, `Finding.CVSSScore`,
+and `Certificate.Wildcard`; `rediver.Ptr(value)` is available. Certificate dates
+use `time.Time`. Findings require a name and a supported severity from
+`SeverityInfo` through `SeverityCritical`.
 
 ## Run the agent
 
-`agent.Run(ctx)` polls continuously. `agent.RunOnce(ctx)` polls and handles one
-job, returning `ErrNoJobAvailable` if none is available. An Agent supports one
-lifecycle invocation; create another Agent to run it again.
+`agent.Run(ctx)` polls continuously. `agent.RunOnce(ctx)` handles at most one
+job and returns `ErrNoJobAvailable` when none is assigned. An `Agent` supports
+one lifecycle invocation; create another agent to run it again.
 
-`WithMaxConcurrency(n)` controls concurrent **jobs**, each with its own batch and
-rate budget. The default is one. Your scanner controls concurrency within each
-batch and must support concurrent `Scan` calls when job concurrency exceeds one.
+`Run` logs individual job failures and continues polling. Authentication and
+malformed assignments stop it. On parent cancellation, `Run` stops polling and
+lets active jobs drain until the shutdown timeout. `Stop()` immediately cancels
+polling and active work.
 
-On cancellation, `Run` stops polling and lets active jobs drain until the shutdown
-timeout. `Stop()` cancels polling and active work immediately. The SDK maintains
-heartbeats during scanning and uploads, including the drain period. `Run` logs
-individual job errors and continues; authentication or malformed-assignment
-errors stop the agent. `RunOnce` returns execution errors to the caller.
+Registration, heartbeats, and result uploads retry transient network,
+resource-exhausted, unavailable, and backend deadline errors up to five total
+attempts. Delays use exponential backoff from one second with up to 25% jitter.
+Caller cancellation and the per-RPC timeout stop immediately. Job claims,
+starts, and terminal callbacks are not replayed; `Run` resumes after a transient
+poll error.
 
 | Option | Purpose |
 |---|---|
-| `WithServerURL(url)` | Override the backend origin. |
-| `WithMaxConcurrency(n)` | Bound concurrent jobs; default 1. |
-| `WithPollInterval(d)` | Delay between empty or failed polls; default 5 seconds. |
-| `WithRequestTimeout(d)` | Bound RPCs; default 60 seconds. Allow headroom above backend long polling, which defaults to 30 seconds. |
-| `WithShutdownTimeout(d)` | Grace period for active jobs; default 30 seconds. Bounded terminal cleanup may follow. |
-| `WithLogger(logger)` | Use a `*slog.Logger`. |
-| `WithRetryDefault()`, `WithRetryAggressive()`, `WithNoRetry()` | Choose a retry preset. |
+| `WithServerURL(url)` | Override `REDIVER_URL` and the default backend origin. |
+| `WithHTTPClient(client)` | Supply the non-nil `*http.Client` used for RPCs. |
+| `WithMaxConcurrency(n)` | Set the positive number of concurrent jobs; the default is one. |
+| `WithShutdownTimeout(d)` | Set the positive grace period for active jobs during shutdown. |
+| `WithRequestTimeout(d)` | Set the positive per-RPC timeout; allow headroom above backend long polling. |
+| `WithLogger(logger)` | Supply a non-nil `*slog.Logger`. |
 
-See [options.go](options.go) for heartbeat intervals, runner metadata, custom HTTP
-clients and retry policies. Claiming polls and terminal callbacks are not
-transparently retried, because a lost response may already have changed backend
-state. Transient polling failures resume in the next `Run` polling cycle.
-
-Use `errors.Is` with `ErrNoJobAvailable`, `ErrInvalidConfig`, `ErrInvalidJob` or
-`ErrAlreadyRunning` for SDK control flow. Wrapped failures preserve diagnostic
-context and underlying causes.
-
-The SDK uses the published Buf Connect and protobuf modules. See
-[go.mod](go.mod) for dependency versions.
+When job concurrency is greater than one, the scanner must support concurrent
+`Scan` calls. Each call receives its own target batch and service-probe budget.
+Use `errors.Is` with `ErrNoJobAvailable`, `ErrInvalidConfig`, `ErrInvalidJob`, or
+`ErrAlreadyRunning` for SDK control flow.
 
 ## Examples and development
 
 - [subdomain](examples/subdomain): a custom `Scanner` implementation for DNS.
 - [serviceprobe](examples/serviceprobe): batch TCP probes sharing one rate limiter.
-- [vulnscan](examples/vulnscan): emit a list of expired-certificate result sets across targets.
-- [task](examples/task): one polled job using `ScanFunc`.
+- [vulnscan](examples/vulnscan): one findings batch containing a final result for
+  every assigned target.
 
-Use `snake_case` for Go filenames. Group tests by their implementation file:
-`file.go` pairs with `file_test.go`. Keep scenario tests and shared test helpers
-in the matching implementation's test file.
+Use `snake_case` for Go filenames. Pair each implementation and test as
+`file.go` and `file_test.go`; keep scenario tests and shared helpers with the
+matching implementation test.
 
 ```sh
 go build ./...

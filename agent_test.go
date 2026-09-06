@@ -10,12 +10,17 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	rediver "github.com/redivers/sdk-go"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func nonRetryableTransportError(err error) error {
+	return connect.NewError(connect.CodeInvalidArgument, err)
+}
 
 func consumerScanner() rediver.Scanner {
 	return rediver.ScanFunc(func(context.Context, []rediver.Target, rediver.Emitter) error { return nil })
@@ -83,9 +88,9 @@ func TestAgentTokenEnvironmentAndExplicitPrecedence(t *testing.T) {
 				if got := r.Header.Values("Authorization"); len(got) != 0 {
 					t.Errorf("unexpected Authorization values: %q", got)
 				}
-				return nil, transportErr
+				return nil, nonRetryableTransportError(transportErr)
 			})}
-			agent, err := rediver.NewAgent(tc.token, consumerScanner(), rediver.WithServerURL("https://sdk.example"), rediver.WithHTTPClient(client), rediver.WithNoRetry())
+			agent, err := rediver.NewAgent(tc.token, consumerScanner(), rediver.WithServerURL("https://sdk.example"), rediver.WithHTTPClient(client))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -106,14 +111,11 @@ func TestAgentLifecycleMethodsForwardErrorsAndRemainOneShot(t *testing.T) {
 			var requests atomic.Int32
 			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 				requests.Add(1)
-				return nil, transportErr
+				return nil, nonRetryableTransportError(transportErr)
 			})}
-			agent, err := rediver.NewAgent("token", consumerScanner(), rediver.WithServerURL("https://sdk.example"), rediver.WithHTTPClient(client), rediver.WithRunnerID("candidate-runner"), rediver.WithNoRetry())
+			agent, err := rediver.NewAgent("token", consumerScanner(), rediver.WithServerURL("https://sdk.example"), rediver.WithHTTPClient(client))
 			if err != nil {
 				t.Fatal(err)
-			}
-			if got := agent.RunnerID(); got != "candidate-runner" {
-				t.Fatalf("RunnerID = %q, want candidate-runner", got)
 			}
 			methods := map[string]func(context.Context) error{"Run": agent.Run, "RunOnce": agent.RunOnce}
 			if err := methods[method](context.Background()); !errors.Is(err, transportErr) {
@@ -147,7 +149,7 @@ func TestAgentStopAndCancellationReachActiveLifecycle(t *testing.T) {
 					<-r.Context().Done()
 					return nil, r.Context().Err()
 				})}
-				agent, err := rediver.NewAgent("token", consumerScanner(), rediver.WithServerURL("https://sdk.example"), rediver.WithHTTPClient(client), rediver.WithNoRetry())
+				agent, err := rediver.NewAgent("token", consumerScanner(), rediver.WithServerURL("https://sdk.example"), rediver.WithHTTPClient(client))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -219,7 +221,7 @@ func TestPublicAgentAndContractMethodSets(t *testing.T) {
 		typ  reflect.Type
 		want []string
 	}{
-		"Agent":    {reflect.TypeFor[*rediver.Agent](), []string{"Run", "RunOnce", "RunnerID", "Stop"}},
+		"Agent":    {reflect.TypeFor[*rediver.Agent](), []string{"Run", "RunOnce", "Stop"}},
 		"Scanner":  {reflect.TypeFor[rediver.Scanner](), []string{"Scan"}},
 		"ScanFunc": {reflect.TypeFor[rediver.ScanFunc](), []string{"Scan"}},
 		"Emitter":  {reflect.TypeFor[rediver.Emitter](), []string{"EmitDomains", "EmitFindings", "EmitServices"}},
@@ -233,7 +235,7 @@ func TestPublicAgentAndContractMethodSets(t *testing.T) {
 		}
 	}
 	for _, typ := range []reflect.Type{
-		reflect.TypeFor[rediver.Target](), reflect.TypeFor[rediver.RetryPolicy](),
+		reflect.TypeFor[rediver.Target](),
 		reflect.TypeFor[rediver.DNSResult](), reflect.TypeFor[rediver.ServiceResult](), reflect.TypeFor[rediver.FindingResult](),
 		reflect.TypeFor[rediver.DNSRecord](), reflect.TypeFor[rediver.Service](), reflect.TypeFor[rediver.HTTPData](),
 		reflect.TypeFor[rediver.Certificate](), reflect.TypeFor[rediver.Finding](), reflect.TypeFor[rediver.RawHTTPRequest](),

@@ -84,7 +84,7 @@ func TestAgentPreservesFatalUploadCauseArrivingDuringDrain(t *testing.T) {
 func TestAgentRunOnceLifecycleAndCapturedIdentity(t *testing.T) {
 	s := &agentServer{job: agentTestJob()}
 	s.register = func(_ context.Context, req *pb.RegisterRequest) (*pb.RegisterResponse, error) {
-		if req.GetRunnerId() != "runner-requested" || req.GetHostname() != "scanner-host" || req.GetVersion() != "v-test" || req.GetIpAddress() != "192.0.2.10" {
+		if len(req.GetRunnerId()) != 36 || req.IpAddress != nil || req.GetHostname() != "scanner-host" || req.GetVersion() != "v-test" {
 			t.Errorf("registration metadata = %v", req)
 		}
 		return &pb.RegisterResponse{RunnerId: "runner-server"}, nil
@@ -110,12 +110,12 @@ func TestAgentRunOnceLifecycleAndCapturedIdentity(t *testing.T) {
 		targets[0].Ports[0] = 1234
 		time.Sleep(35 * time.Millisecond)
 		return emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
-	}, func(cfg *Config) { cfg.RunnerID = "runner-requested" }, func(cfg *Config) { cfg.Hostname = "scanner-host" }, func(cfg *Config) { cfg.Version = "v-test" }, func(cfg *Config) { cfg.IPAddress = "192.0.2.10" })
+	}, func(cfg *Config) { cfg.Hostname = "scanner-host" }, func(cfg *Config) { cfg.Version = "v-test" })
 	if err := a.RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if a.RunnerID() != "runner-server" {
-		t.Errorf("RunnerID = %q", a.RunnerID())
+	if a.currentRunnerID() != "runner-server" {
+		t.Errorf("runner ID = %q", a.currentRunnerID())
 	}
 	for _, event := range []string{"register", "poll", "start", "push", "completed"} {
 		if n := s.count(event); n != 1 {
@@ -142,7 +142,7 @@ func TestAgentRunOnceNoJobAndPollIsNotRetried(t *testing.T) {
 			t.Error("unexpected handler")
 			return nil
 		}, func(cfg *Config) {
-			cfg.RetryPolicy = contract.RetryPolicy{MaxAttempts: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond, BackoffMultiplier: 1, RetryableStatusCodes: []int{503}}
+			cfg.RetryPolicy = contract.RetryPolicy{MaxAttempts: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond, BackoffMultiplier: 1}
 		})
 		err := a.RunOnce(context.Background())
 		if pollErr == nil && !errors.Is(err, contract.ErrNoJobAvailable) {
@@ -506,7 +506,7 @@ func TestAgentStaleHeartbeatCancelsWorkWithoutRetry(t *testing.T) {
 				close(accepted)
 				<-ctx.Done()
 				return ctx.Err()
-			}, func(cfg *Config) { cfg.RetryPolicy = contract.AggressiveRetryPolicy() })
+			}, func(cfg *Config) { cfg.RetryPolicy = contract.DefaultRetryPolicy() })
 			done := make(chan error, 1)
 			go func() { done <- a.RunOnce(context.Background()) }()
 			err := waitAgentError(t, done)
@@ -1246,7 +1246,7 @@ func newScannerAPIAgent(t *testing.T, server *scannerAPIServer, scanner contract
 	}))
 	t.Cleanup(httpServer.Close)
 	cfg := DefaultConfig("test")
-	cfg.ServerURL, cfg.HTTPClient, cfg.RetryPolicy = httpServer.URL, httpServer.Client(), contract.NoRetry()
+	cfg.ServerURL, cfg.HTTPClient, cfg.RetryPolicy = httpServer.URL, httpServer.Client(), contract.RetryPolicy{MaxAttempts: 1}
 	cfg.RequestTimeout, cfg.ShutdownTimeout = time.Second, time.Second
 	cfg.HeartbeatInterval, cfg.JobHeartbeatInterval = time.Hour, time.Hour
 	for _, configure := range opts {

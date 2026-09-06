@@ -20,6 +20,7 @@ func TestRetryPolicyWrappedConnectErrors(t *testing.T) {
 		{"unavailable", connect.NewError(connect.CodeUnavailable, errors.New("offline")), 3},
 		{"rate limited", connect.NewError(connect.CodeResourceExhausted, errors.New("busy")), 3},
 		{"upstream timeout", connect.NewError(connect.CodeDeadlineExceeded, errors.New("upstream timed out")), 3},
+		{"attempt deadline", connect.NewError(connect.CodeDeadlineExceeded, context.DeadlineExceeded), 1},
 		{"stale run", connect.NewError(connect.CodeFailedPrecondition, errors.New("stale")), 1},
 		{"auth", connect.NewError(connect.CodeUnauthenticated, errors.New("invalid token")), 1},
 		{"validation", connect.NewError(connect.CodeInvalidArgument, errors.New("invalid target")), 1},
@@ -44,57 +45,36 @@ func TestRetryPolicyWrappedConnectErrors(t *testing.T) {
 	}
 }
 
-func TestRetryPolicyConnectStatusOverride(t *testing.T) {
-	p := contract.DefaultRetryPolicy()
-	p.RetryableStatusCodes = []int{429}
-	if isRetryableError(p, connect.NewError(connect.CodeUnavailable, errors.New("offline"))) {
-		t.Fatal("retried unavailable despite custom status policy")
-	}
-}
-
-func TestIsRetryableStatus(t *testing.T) {
-	p := contract.DefaultRetryPolicy()
-
-	retryable := []int{429, 502, 503, 504}
-	for _, code := range retryable {
-		if !isRetryableStatus(p, code) {
-			t.Errorf("expected %d to be retryable", code)
-		}
-	}
-
-	notRetryable := []int{200, 400, 401, 404, 500}
-	for _, code := range notRetryable {
-		if isRetryableStatus(p, code) {
-			t.Errorf("expected %d to not be retryable", code)
-		}
-	}
-}
-
 func TestIsRetryableError(t *testing.T) {
-	p := contract.DefaultRetryPolicy()
-
 	// nil error
-	if isRetryableError(p, nil) {
+	if isRetryableError(nil) {
 		t.Error("nil error should not be retryable")
 	}
 
 	// Retryable Connect error
-	if !isRetryableError(p, connect.NewError(connect.CodeResourceExhausted, errors.New("backend error"))) {
+	if !isRetryableError(connect.NewError(connect.CodeResourceExhausted, errors.New("backend error"))) {
 		t.Error("429 Connect error should be retryable")
 	}
 
 	// Non-retryable Connect error
-	if isRetryableError(p, connect.NewError(connect.CodeInvalidArgument, errors.New("backend error"))) {
+	if isRetryableError(connect.NewError(connect.CodeInvalidArgument, errors.New("backend error"))) {
 		t.Error("400 Connect error should not be retryable")
 	}
 
 	// Network error
-	if !isRetryableError(p, &mockNetError{}) {
+	if !isRetryableError(&mockNetError{}) {
 		t.Error("net.Error should be retryable")
 	}
 
+	// Local context errors should not be retried even though a deadline error is a net.Error.
+	for _, err := range []error{context.Canceled, context.DeadlineExceeded} {
+		if isRetryableError(err) {
+			t.Errorf("local context error should not be retryable: %v", err)
+		}
+	}
+
 	// Generic error
-	if isRetryableError(p, errors.New("generic")) {
+	if isRetryableError(errors.New("generic")) {
 		t.Error("generic error should not be retryable")
 	}
 }
@@ -102,11 +82,11 @@ func TestIsRetryableError(t *testing.T) {
 // mockNetError implements net.Error for testing.
 type mockNetError struct{}
 
-func (e *mockNetError) Error() string { return "network error" }
+func (*mockNetError) Error() string { return "network error" }
 
-func (e *mockNetError) Timeout() bool { return true }
+func (*mockNetError) Timeout() bool { return true }
 
-func (e *mockNetError) Temporary() bool { return true }
+func (*mockNetError) Temporary() bool { return true }
 
 func TestBackoffDuration(t *testing.T) {
 	p := contract.RetryPolicy{
@@ -163,8 +143,22 @@ func TestBackoffDuration_WithJitter(t *testing.T) {
 	}
 }
 
-func TestRetryPolicy_Success(t *testing.T) {
-	p := contract.NoRetry()
+func TestBackoffDurationJitterHonorsMaximum(t *testing.T) {
+	p := contract.RetryPolicy{
+		InitialBackoff:    100 * time.Millisecond,
+		MaxBackoff:        100 * time.Millisecond,
+		BackoffMultiplier: 2,
+		Jitter:            true,
+	}
+	for i := 0; i < 50; i++ {
+		if got := backoffDuration(p, 1); got > p.MaxBackoff {
+			t.Fatalf("jittered backoff = %v, want at most %v", got, p.MaxBackoff)
+		}
+	}
+}
+
+func TestRetryPolicySuccess(t *testing.T) {
+	p := contract.RetryPolicy{MaxAttempts: 1}
 	calls := 0
 	err := retry(p, context.Background(), func() error {
 		calls++
@@ -178,13 +172,12 @@ func TestRetryPolicy_Success(t *testing.T) {
 	}
 }
 
-func TestRetryPolicy_RetryThenSuccess(t *testing.T) {
+func TestRetryPolicyRetryThenSuccess(t *testing.T) {
 	p := contract.RetryPolicy{
-		MaxAttempts:          3,
-		InitialBackoff:       1 * time.Millisecond,
-		MaxBackoff:           10 * time.Millisecond,
-		BackoffMultiplier:    1.0,
-		RetryableStatusCodes: []int{503},
+		MaxAttempts:       3,
+		InitialBackoff:    1 * time.Millisecond,
+		MaxBackoff:        10 * time.Millisecond,
+		BackoffMultiplier: 1.0,
 	}
 	calls := 0
 	err := retry(p, context.Background(), func() error {
@@ -202,11 +195,10 @@ func TestRetryPolicy_RetryThenSuccess(t *testing.T) {
 	}
 }
 
-func TestRetryPolicy_NonRetryableError(t *testing.T) {
+func TestRetryPolicyNonRetryableError(t *testing.T) {
 	p := contract.RetryPolicy{
-		MaxAttempts:          5,
-		InitialBackoff:       1 * time.Millisecond,
-		RetryableStatusCodes: []int{429},
+		MaxAttempts:    5,
+		InitialBackoff: 1 * time.Millisecond,
 	}
 	calls := 0
 	err := retry(p, context.Background(), func() error {
@@ -221,40 +213,35 @@ func TestRetryPolicy_NonRetryableError(t *testing.T) {
 	}
 }
 
-func TestRetryPolicy_MaxAttemptsExceeded(t *testing.T) {
+func TestRetryPolicyMaxAttemptsExceeded(t *testing.T) {
 	p := contract.RetryPolicy{
-		MaxAttempts:          3,
-		InitialBackoff:       1 * time.Millisecond,
-		MaxBackoff:           10 * time.Millisecond,
-		BackoffMultiplier:    1.0,
-		RetryableStatusCodes: []int{429},
+		MaxAttempts:       3,
+		InitialBackoff:    1 * time.Millisecond,
+		MaxBackoff:        10 * time.Millisecond,
+		BackoffMultiplier: 1.0,
 	}
 	calls := 0
+	cause := connect.NewError(connect.CodeResourceExhausted, errors.New("backend error"))
 	err := retry(p, context.Background(), func() error {
 		calls++
-		return connect.NewError(connect.CodeResourceExhausted, errors.New("backend error"))
+		return cause
 	})
 
 	if calls != 3 {
 		t.Errorf("expected 3 calls, got %d", calls)
 	}
 
-	var retryErr *retryExhaustedError
-	if !errors.As(err, &retryErr) {
-		t.Fatalf("expected *retryExhaustedError, got %T", err)
-	}
-	if retryErr.Attempt != 3 || retryErr.MaxAttempt != 3 {
-		t.Errorf("expected attempt 3/3, got %d/%d", retryErr.Attempt, retryErr.MaxAttempt)
+	if !errors.Is(err, cause) || err.Error() != "retry failed after 3 attempts: resource_exhausted: backend error" {
+		t.Fatalf("retry diagnostics lost: %v", err)
 	}
 }
 
-func TestRetryPolicy_ContextCancelled(t *testing.T) {
+func TestRetryPolicyContextCancelled(t *testing.T) {
 	p := contract.RetryPolicy{
-		MaxAttempts:          10,
-		InitialBackoff:       1 * time.Second,
-		MaxBackoff:           10 * time.Second,
-		BackoffMultiplier:    2.0,
-		RetryableStatusCodes: []int{429},
+		MaxAttempts:       10,
+		InitialBackoff:    1 * time.Second,
+		MaxBackoff:        10 * time.Second,
+		BackoffMultiplier: 2.0,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
@@ -267,10 +254,14 @@ func TestRetryPolicy_ContextCancelled(t *testing.T) {
 	}
 }
 
-func TestRetryExhaustedErrorUnwrap(t *testing.T) {
-	cause := errors.New("unavailable")
-	err := &retryExhaustedError{Err: cause, Attempt: 3, MaxAttempt: 3}
-	if !errors.Is(err, cause) || err.Error() != "retryable error (attempt 3/3, retry in 0s): unavailable" {
-		t.Fatalf("retry diagnostics lost: %v", err)
+func TestRetryPolicyCancellationDuringAttemptWins(t *testing.T) {
+	p := contract.RetryPolicy{MaxAttempts: 1}
+	ctx, cancel := context.WithCancel(context.Background())
+	err := retry(p, ctx, func() error {
+		cancel()
+		return connect.NewError(connect.CodeUnavailable, errors.New("offline"))
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation lost after attempt: %v", err)
 	}
 }

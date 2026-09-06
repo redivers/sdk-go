@@ -16,7 +16,7 @@ type Agent struct {
 // NewAgent validates local configuration without making network requests.
 // Empty token and server URL configuration use REDIVER_TOKEN and REDIVER_URL.
 func NewAgent(token string, scanner Scanner, opts ...Option) (*Agent, error) {
-	cfg := runtime.DefaultConfig(SdkVersion)
+	cfg := runtime.DefaultConfig(sdkVersion)
 	for _, opt := range opts {
 		if opt == nil {
 			return nil, fmt.Errorf("%w: nil option", ErrInvalidConfig)
@@ -41,7 +41,3 @@ func (a *Agent) RunOnce(ctx context.Context) error { return a.runner.RunOnce(ctx
 // Stop is idempotent and immediately cancels polling and active scanner work.
 // Wait for Run or RunOnce to return for cleanup to finish.
 func (a *Agent) Stop() { a.runner.Stop() }
-
-// RunnerID returns the server-issued runner ID after registration, or the
-// configured candidate ID before registration. It is safe during Run.
-func (a *Agent) RunnerID() string { return a.runner.RunnerID() }

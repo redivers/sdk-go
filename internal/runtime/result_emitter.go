@@ -63,7 +63,7 @@ func (e *resultEmitter) emit(name string, upload func(context.Context, *client.C
 		if recovered := recover(); recovered != nil {
 			// A scanner may recover this panic itself; the job must remain failed.
 			e.mu.Lock()
-			e.fail(fmt.Errorf("rediver: %s panic: %v", name, recovered))
+			_ = e.fail(fmt.Errorf("rediver: %s panic: %v", name, recovered))
 			e.mu.Unlock()
 			panic(recovered)
 		}

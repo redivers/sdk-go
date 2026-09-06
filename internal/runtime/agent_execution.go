@@ -37,7 +37,7 @@ func (a *Agent) execute(s *agentSession, job *client.Assignment) error {
 		terminalErr = a.client.Fail(terminalCtx, job, scanErr)
 	}
 	if err := errors.Join(scanErr, terminalErr); err != nil {
-		return &jobError{JobID: job.ID(), Message: "execution failed", Err: err}
+		return fmt.Errorf("job %s: execution failed: %w", job.ID(), err)
 	}
 	return nil
 }
@@ -49,9 +49,6 @@ func (a *Agent) scan(ctx context.Context, job *client.Assignment) error {
 		return err
 	}
 	emitter := newResultEmitter(ctx, job, a.client, cancel)
-	// Cleanup remains owned by the runtime even when the scanner ignores ctx.
-	stopClose := context.AfterFunc(ctx, emitter.close)
-	defer stopClose()
 	defer emitter.close()
 	beats := startHeartbeat(ctx, a.cfg.JobHeartbeatInterval, func(ctx context.Context) error {
 		return a.client.JobHeartbeat(ctx, job)
@@ -83,7 +80,7 @@ func (a *Agent) startFailure(s *agentSession, job *client.Assignment, cause erro
 		defer cancel()
 		terminalErr = a.client.Fail(ctx, job, cause)
 	}
-	return &jobError{JobID: job.ID(), Message: "start failed", Err: errors.Join(cause, terminalErr)}
+	return fmt.Errorf("job %s: start failed: %w", job.ID(), errors.Join(cause, terminalErr))
 }
 
 func invokeScanner(scanner contract.Scanner, ctx context.Context, targets []contract.Target, emitter contract.Emitter) (err error) {

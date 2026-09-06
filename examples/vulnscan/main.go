@@ -73,7 +73,7 @@ func scanCertificate(ctx context.Context, target rediver.Target) (*rediver.Findi
 		return nil, err
 	}
 	state := conn.(*tls.Conn).ConnectionState()
-	conn.Close()
+	_ = conn.Close()
 	if len(state.PeerCertificates) == 0 || !time.Now().After(state.PeerCertificates[0].NotAfter) {
 		return nil, nil
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -194,8 +195,10 @@ func startClientServer(t *testing.T, handler *clientTestServer) *httptest.Server
 func newTestClient(t *testing.T, handler *clientTestServer) *Client {
 	t.Helper()
 	server := startClientServer(t, handler)
-	return New("network-token", server.URL, server.Client(), time.Second, contract.NoRetry())
+	return New("network-token", server.URL, server.Client(), time.Second, contract.RetryPolicy{MaxAttempts: 1})
 }
+
+func ptr[T any](value T) *T { return &value }
 
 type transportRoundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -221,7 +224,7 @@ func TestClientTransportRequestTimeoutCancelsCustomClientRegistration(t *testing
 		return transport.RoundTrip(req)
 	})}
 	server := startClientServer(t, s)
-	agent := New("network-token", server.URL, client, 50*time.Millisecond, contract.NoRetry())
+	agent := New("network-token", server.URL, client, 50*time.Millisecond, contract.RetryPolicy{MaxAttempts: 1})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	started := time.Now()
@@ -257,12 +260,11 @@ func TestClientTransportRegistrationRetriesRespectAttemptLimit(t *testing.T) {
 	s := &clientTestServer{register: func(context.Context, *pb.RegisterRequest) (*pb.RegisterResponse, error) {
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("try again"))
 	}}
-	policy := contract.RetryPolicy{MaxAttempts: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond, BackoffMultiplier: 1, RetryableStatusCodes: []int{503}}
+	policy := contract.RetryPolicy{MaxAttempts: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond, BackoffMultiplier: 1}
 	server := startClientServer(t, s)
 	agent := New("network-token", server.URL, server.Client(), time.Second, policy)
 	_, err := agent.Register(context.Background(), Registration{})
-	var retryErr *retryExhaustedError
-	if !errors.As(err, &retryErr) || retryErr.Attempt != 3 {
+	if connect.CodeOf(err) != connect.CodeUnavailable || !strings.Contains(err.Error(), "retry failed after 3 attempts") {
 		t.Fatalf("registration retries: got %v, want exhausted three-attempt policy", err)
 	}
 	if s.count("register") != 3 || s.count("poll") != 0 {
@@ -292,7 +294,7 @@ func TestClientTransportRegistrationRetryGetsFreshRequestTimeout(t *testing.T) {
 		requestContexts <- req.Context()
 		return transport.RoundTrip(req)
 	})}
-	policy := contract.RetryPolicy{MaxAttempts: 2, InitialBackoff: retryBackoff, MaxBackoff: retryBackoff, BackoffMultiplier: 1, RetryableStatusCodes: []int{503}}
+	policy := contract.RetryPolicy{MaxAttempts: 2, InitialBackoff: retryBackoff, MaxBackoff: retryBackoff, BackoffMultiplier: 1}
 	agent := New("network-token", server.URL, httpClient, requestTimeout, policy)
 	ctx := context.WithValue(context.Background(), callerKey, "registration-caller")
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -336,7 +338,7 @@ func TestClientTransportRejectsRedirectWithoutForwardingToken(t *testing.T) {
 	}))
 	defer source.Close()
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return nil }}
-	agent := New("network-token", source.URL, client, time.Second, contract.NoRetry())
+	agent := New("network-token", source.URL, client, time.Second, contract.RetryPolicy{MaxAttempts: 1})
 	if _, err := agent.Register(context.Background(), Registration{}); err == nil {
 		t.Fatal("redirected registration unexpectedly succeeded")
 	}

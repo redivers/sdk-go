@@ -52,7 +52,7 @@ func scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter
 				}
 				continue
 			}
-			conn.Close()
+			_ = conn.Close()
 			// Host defaults to the assigned target's host when omitted.
 			services = append(services, rediver.Service{Port: port, Transport: "tcp"})
 		}

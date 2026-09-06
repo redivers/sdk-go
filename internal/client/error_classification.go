@@ -2,7 +2,6 @@ package client
 
 import (
 	"connectrpc.com/connect"
-	"github.com/redivers/sdk-go/internal/contract"
 )
 
 // A job may join failures from several targets and its terminal callback.
@@ -41,5 +40,5 @@ func IsTransientPollError(err error) bool {
 	if IsStaleRunError(err) {
 		return false
 	}
-	return hasConnectCode(err, connect.CodeUnavailable, connect.CodeResourceExhausted, connect.CodeDeadlineExceeded) || isRetryableError(contract.DefaultRetryPolicy(), err)
+	return hasConnectCode(err, connect.CodeUnavailable, connect.CodeResourceExhausted, connect.CodeDeadlineExceeded) || isRetryableError(err)
 }

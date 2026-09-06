@@ -605,32 +605,35 @@ func TestScannerValidatesWholeEmitCallAndPreservesEarlierAcknowledgements(t *tes
 						case pb.Scanner_SCANNER_SUBDOMAIN:
 							valid := contract.DNSRecord{Domain: "www.example.com"}
 							results := []contract.DNSResult{{Target: first, Items: []contract.DNSRecord{valid}}, {Target: last, Items: []contract.DNSRecord{valid}}}
-							if invalid == "later observation" {
+							switch invalid {
+							case "later observation":
 								results[0].Items = append(results[0].Items, contract.DNSRecord{Domain: "unrelated.invalid"})
-							} else if invalid == "later wrapper" {
+							case "later wrapper":
 								results[1].Items[0].Domain = "unrelated.invalid"
-							} else if invalid == "empty reconstructed target" {
+							case "empty reconstructed target":
 								results[1].Items = nil
 							}
 							emissionErr = emit.EmitDomains(results...)
 						case pb.Scanner_SCANNER_SERVICE_DISCOVER:
 							results := []contract.ServiceResult{{Target: first, Items: []contract.Service{{Port: 80}}}, {Target: last, Items: []contract.Service{{Port: 443}}}}
-							if invalid == "later observation" {
+							switch invalid {
+							case "later observation":
 								results[0].Items = append(results[0].Items, contract.Service{Port: 65536})
-							} else if invalid == "later wrapper" {
+							case "later wrapper":
 								results[1].Items[0].Port = 65536
-							} else if invalid == "empty reconstructed target" {
+							case "empty reconstructed target":
 								results[1].Items = nil
 							}
 							emissionErr = emit.EmitServices(results...)
 						default:
 							valid := contract.Finding{Name: "observed", Severity: contract.SeverityHigh}
 							results := []contract.FindingResult{{Target: first, Items: []contract.Finding{valid}}, {Target: last, Items: []contract.Finding{valid}}}
-							if invalid == "later observation" {
+							switch invalid {
+							case "later observation":
 								results[0].Items = append(results[0].Items, contract.Finding{})
-							} else if invalid == "later wrapper" {
+							case "later wrapper":
 								results[1].Items[0].Severity = contract.SeverityUnspecified
-							} else if invalid == "empty reconstructed target" {
+							case "empty reconstructed target":
 								results[1].Items = nil
 							}
 							emissionErr = emit.EmitFindings(results...)
@@ -892,11 +895,14 @@ func TestScannerEmitsMultipleTargetsAndMergesRepeatedResultSets(t *testing.T) {
 						}
 					}
 				}
-				want := [][]string{{"two", "three"}, {"one", "four"}, {"five"}}
-				if kind == pb.Scanner_SCANNER_SUBDOMAIN {
+				var want [][]string
+				switch kind {
+				case pb.Scanner_SCANNER_SUBDOMAIN:
 					want = [][]string{{"example.com", "two.example.com", "three.example.com"}, {"example.com", "one.example.com", "four.example.com"}, {"example.com", "five.example.com"}}
-				} else if kind == pb.Scanner_SCANNER_SERVICE_DISCOVER {
+				case pb.Scanner_SCANNER_SERVICE_DISCOVER:
 					want = [][]string{{"81", "82"}, {"80", "443"}, {"443"}}
+				default:
+					want = [][]string{{"two", "three"}, {"one", "four"}, {"five"}}
 				}
 				if !reflect.DeepEqual(got, want) {
 					t.Errorf("merged target results = %v; want %v", got, want)
@@ -1025,7 +1031,7 @@ func mustEmitter(t *testing.T, ctx context.Context, job *pb.Job, fixture *emitte
 	_, handler := networkscanconnect.NewScannerServiceHandler(fixture)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	backend := client.New("token", server.URL, server.Client(), time.Second, contract.NoRetry())
+	backend := client.New("token", server.URL, server.Client(), time.Second, contract.RetryPolicy{MaxAttempts: 1})
 	assignment, err := backend.Poll(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -1034,7 +1040,7 @@ func mustEmitter(t *testing.T, ctx context.Context, job *pb.Job, fixture *emitte
 		t.Fatal(err)
 	}
 	if fixture.transport != nil {
-		backend = client.New("token", server.URL, &http.Client{Transport: fixture.transport}, time.Second, contract.NoRetry())
+		backend = client.New("token", server.URL, &http.Client{Transport: fixture.transport}, time.Second, contract.RetryPolicy{MaxAttempts: 1})
 	}
 	scanCtx, cancelScan := context.WithCancelCause(ctx)
 	emitter := newResultEmitter(scanCtx, assignment, backend, cancelScan)
