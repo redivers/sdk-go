@@ -256,12 +256,14 @@ fabricates DNS metadata. Each emitted DNS/service observation is a complete
 record; backend projection replaces its scanner-owned metadata rather than
 merging it. For services, an empty `Host` uses the assigned host.
 
-The SDK gives each push a fresh idempotency key and reuses it on transport retries
-within the current job run. A lost acknowledgement therefore does not repeat that
-push's projection. A separate `Emit*` call uses a new key, but cannot update a
-target terminalized by its first accepted push. If a job attempt fails, backend
-may scan its unfinished targets again; accepted outcomes for finished targets
-remain available. Return emission errors promptly and honor cancellation.
+Replay safety comes from the backend, not from the client: a push naming a target
+whose scan is already terminal is ignored. A lost acknowledgement therefore does
+not repeat that push's projection, and a later `Emit*` cannot update a target
+terminalized by its first accepted push. The SDK also sets an `Idempotency-Key`
+header, fresh per push and reused across transport retries, but the networkscan
+backend does not currently read it — do not rely on it. If a job attempt fails,
+the backend may scan its unfinished targets again; accepted outcomes for finished
+targets remain. Return emission errors promptly and honor cancellation.
 
 Result models use plain strings and integers for ordinary fields. Optional values
 that need explicit presence use pointers, such as `DNSRecord.TTL`,
