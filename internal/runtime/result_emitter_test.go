@@ -434,7 +434,7 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 				case pb.Scanner_SCANNER_SUBDOMAIN:
 					ttl := 60
 					records := []contract.DNSRecord{
-						{Domain: "first.example.com", IPs: []string{"192.0.2.3"}, TXT: []string{"observed"}, TTL: &ttl},
+						{Domain: "first.example.com", A: []string{"192.0.2.3"}, AAAA: []string{"2001:db8::3"}, TXT: []string{"observed"}, TTL: &ttl},
 						{Domain: firstTarget.Domain},
 					}
 					results := []contract.DNSResult{{Target: firstTarget, Items: records}, {Target: firstTarget, Items: []contract.DNSRecord{{Domain: "second.example.com"}}}}
@@ -444,7 +444,7 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 					if err := assertPushCount(1); err != nil {
 						return err
 					}
-					records[0].Domain, records[0].IPs[0], records[0].TXT[0], ttl = "changed.invalid", "192.0.2.99", "changed", 90
+					records[0].Domain, records[0].A[0], records[0].AAAA[0], records[0].TXT[0], ttl = "changed.invalid", "192.0.2.99", "2001:db8::99", "changed", 90
 					results[1].Items[0].Domain = "changed.invalid"
 					results[0] = contract.DNSResult{Target: contract.Target{Domain: "changed.invalid"}}
 					if err := emit.EmitDomains(contract.DNSResult{Target: secondTarget, Items: []contract.DNSRecord{
@@ -521,7 +521,7 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 					}
 				}
 				record := server.domains[0].Results[0].Domains[0]
-				if len(record.Ips) != 1 || record.Ips[0] != "192.0.2.3" || len(record.Txt) != 1 || record.Txt[0] != "observed" || record.GetTtl() != 60 {
+				if len(record.A) != 1 || record.A[0] != "192.0.2.3" || len(record.Aaaa) != 1 || record.Aaaa[0] != "2001:db8::3" || len(record.Txt) != 1 || record.Txt[0] != "observed" || record.GetTtl() != 60 {
 					t.Errorf("caller mutation leaked into DNS payload: %v", record)
 				}
 				wantDomains := []string{"first.example.com", "example.com", "second.example.com", "example.com", "third.example.com", "fourth.example.com"}

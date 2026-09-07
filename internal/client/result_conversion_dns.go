@@ -36,7 +36,8 @@ func toProtoDNSRecords(domain string, records []contract.DNSRecord) ([]*pb.DnsRe
 		// observation; dropping or merging them here would discard metadata.
 		out := &pb.DnsRecord{
 			Domain: record.Domain,
-			Ips:    slices.Clone(record.IPs),
+			A:      slices.Clone(record.A),
+			Aaaa:   slices.Clone(record.AAAA),
 			Txt:    slices.Clone(record.TXT),
 			Mx:     slices.Clone(record.MX),
 			Soa:    slices.Clone(record.SOA),

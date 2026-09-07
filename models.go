@@ -2,8 +2,9 @@ package rediver
 
 import "github.com/redivers/sdk-go/internal/contract"
 
-// DNSRecord is a domain observation. TTL is measured in seconds; nil means
-// unknown, while a pointer to zero records an explicit zero TTL.
+// DNSRecord is a domain observation. A contains IPv4 addresses; AAAA contains
+// IPv6 addresses. TTL is measured in seconds; nil means unknown, while a pointer
+// to zero records an explicit zero TTL.
 type DNSRecord = contract.DNSRecord
 
 // Service is a discovered network service. An empty Host uses the assigned

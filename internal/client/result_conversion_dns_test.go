@@ -1,23 +1,78 @@
 package client
 
 import (
+	"encoding/json"
 	"math"
+	"slices"
 	"testing"
 
 	pb "buf.build/gen/go/rediver/api/protocolbuffers/go/networkscan"
 	"github.com/redivers/sdk-go/internal/contract"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestToProtoDNSRecordsUsesAddressFamilyJSON(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		record contract.DNSRecord
+		want   map[string][]string
+	}{
+		{
+			name:   "IPv4 only",
+			record: contract.DNSRecord{Domain: "example.com", A: []string{"192.0.2.1"}},
+			want:   map[string][]string{"a": {"192.0.2.1"}},
+		},
+		{
+			name:   "IPv6 only",
+			record: contract.DNSRecord{Domain: "example.com", AAAA: []string{"2001:db8::1"}},
+			want:   map[string][]string{"aaaa": {"2001:db8::1"}},
+		},
+		{
+			name:   "both address families",
+			record: contract.DNSRecord{Domain: "example.com", A: []string{"192.0.2.1"}, AAAA: []string{"2001:db8::1"}},
+			want:   map[string][]string{"a": {"192.0.2.1"}, "aaaa": {"2001:db8::1"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			converted, err := toProtoDNSRecords("example.com", []contract.DNSRecord{tc.record})
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, err := protojson.Marshal(converted[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(payload, &fields); err != nil {
+				t.Fatal(err)
+			}
+			for _, key := range []string{"a", "aaaa"} {
+				if want, present := tc.want[key]; present {
+					var addresses []string
+					if err := json.Unmarshal(fields[key], &addresses); err != nil || !slices.Equal(addresses, want) {
+						t.Errorf("%s JSON addresses = %v, error = %v; want %v; payload = %s", key, addresses, err, want, payload)
+					}
+				} else if _, present := fields[key]; present {
+					t.Errorf("absent address family %s was serialized: %s", key, payload)
+				}
+			}
+			if _, present := fields["ips"]; present {
+				t.Errorf("DNS JSON included the removed ips field: %s", payload)
+			}
+		})
+	}
+}
 
 func TestToProtoDNSRecordsPreservesObservationsAndPresence(t *testing.T) {
 	ttl := 0
 	records := []contract.DNSRecord{{
-		Domain: "Example.COM.", IPs: []string{"192.0.2.1"}, TXT: []string{"txt"},
+		Domain: "Example.COM.", A: []string{"192.0.2.1"}, AAAA: []string{"2001:db8::1"}, TXT: []string{"txt"},
 		MX: []string{"mail.example.com"}, SOA: []string{"soa"}, NS: []string{"ns.example.com"},
 		CNAME: "alias.example.com", TTL: &ttl,
 	}}
 	want := &pb.DnsRecord{
-		Domain: "Example.COM.", Ips: []string{"192.0.2.1"}, Txt: []string{"txt"},
+		Domain: "Example.COM.", A: []string{"192.0.2.1"}, Aaaa: []string{"2001:db8::1"}, Txt: []string{"txt"},
 		Mx: []string{"mail.example.com"}, Soa: []string{"soa"}, Ns: []string{"ns.example.com"},
 		Cname: ptr("alias.example.com"), Ttl: ptr(int32(0)),
 	}
@@ -28,7 +83,8 @@ func TestToProtoDNSRecordsPreservesObservationsAndPresence(t *testing.T) {
 	if records[0].Domain != "Example.COM." || records[0].TTL != &ttl {
 		t.Fatal("conversion mutated the handler's record")
 	}
-	records[0].IPs[0], records[0].TXT[0], records[0].MX[0] = "changed", "changed", "changed"
+	records[0].A[0], records[0].AAAA[0] = "changed IPv4", "changed IPv6"
+	records[0].TXT[0], records[0].MX[0] = "changed", "changed"
 	records[0].SOA[0], records[0].NS[0], ttl = "changed", "changed", 10
 	if !proto.Equal(got[0], want) {
 		t.Fatalf("converted record retained mutable handler data: %v", got[0])
