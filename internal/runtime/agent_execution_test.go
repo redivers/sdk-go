@@ -1073,7 +1073,7 @@ func scannerAPIHandler(t *testing.T, kind pb.Scanner, adapter string, calls *ato
 			}
 			return emit.EmitDomains(contract.DNSResult{Target: target, Items: []contract.DNSRecord{
 				{Domain: target.Domain},
-				{Domain: "www.example.com", IPs: []string{"192.0.2.3"}},
+				{Domain: "www.example.com", A: []string{"192.0.2.3"}},
 			}})
 		case pb.Scanner_SCANNER_SERVICE_DISCOVER:
 			if target.Host != "example.com" || target.Rate != 25 || !reflect.DeepEqual(target.Ports, []int{80, 81, 82, 443}) {
@@ -1137,7 +1137,7 @@ func assertScannerAPIPayload(t *testing.T, s *scannerAPIServer, empty bool) {
 			t.Errorf("assigned DNS record changed: %v", result.Domains[0])
 		}
 		record := result.Domains[1]
-		if record.Domain != "www.example.com" || !reflect.DeepEqual(record.Ips, []string{"192.0.2.3"}) {
+		if record.Domain != "www.example.com" || !reflect.DeepEqual(record.A, []string{"192.0.2.3"}) {
 			t.Errorf("DNS descendant observation changed: %v", record)
 		}
 	case pb.Scanner_SCANNER_SERVICE_DISCOVER:

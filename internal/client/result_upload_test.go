@@ -285,8 +285,8 @@ func TestPushDNSDoesNotSynthesizeAssignedRecord(t *testing.T) {
 	}{
 		{
 			name:   "descendant without own record",
-			record: contract.DNSRecord{Domain: "a.example.com", IPs: []string{"192.0.2.1"}},
-			want:   &pb.DnsRecord{Domain: "a.example.com", Ips: []string{"192.0.2.1"}},
+			record: contract.DNSRecord{Domain: "a.example.com", A: []string{"192.0.2.1"}},
+			want:   &pb.DnsRecord{Domain: "a.example.com", A: []string{"192.0.2.1"}},
 		},
 		{
 			name:   "own record with metadata",
@@ -385,7 +385,7 @@ func TestPushConvertedRequestSnapshotsSurviveRetries(t *testing.T) {
 			score := 8.1
 			errorMessage := "original failure"
 			domains := []contract.DNSResult{
-				{Target: targets[0], Items: []contract.DNSRecord{{Domain: "www.example.com", IPs: []string{"192.0.2.1"}, TTL: ptr(60)}}},
+				{Target: targets[0], Items: []contract.DNSRecord{{Domain: "www.example.com", A: []string{"192.0.2.1"}, AAAA: []string{"2001:db8::1"}, TTL: ptr(60)}}},
 				{Target: targets[1], Items: []contract.DNSRecord{{Domain: "other.example.com"}}},
 				{Target: targets[2], ErrorMessage: &errorMessage},
 			}
@@ -400,7 +400,8 @@ func TestPushConvertedRequestSnapshotsSurviveRetries(t *testing.T) {
 				{Target: targets[2], ErrorMessage: &errorMessage},
 			}
 			mutate := func() {
-				domains[0].Items[0].IPs[0] = "changed"
+				domains[0].Items[0].A[0] = "changed IPv4"
+				domains[0].Items[0].AAAA[0] = "changed IPv6"
 				*domains[0].Items[0].TTL = 90
 				domains[1].Items[0].Domain = "changed.example.com"
 				services[0].Items[0].Port = 8080
@@ -451,6 +452,10 @@ func TestPushConvertedRequestSnapshotsSurviveRetries(t *testing.T) {
 			case *pb.PushDomainsRequest:
 				if len(req.Results) != len(original.Targets)-1 || req.Results[2].ErrorMessage == nil || *req.Results[2].ErrorMessage != "original failure" {
 					t.Fatalf("DNS error snapshot = %v", req.Results)
+				}
+				wantRecord := &pb.DnsRecord{Domain: "www.example.com", A: []string{"192.0.2.1"}, Aaaa: []string{"2001:db8::1"}, Ttl: ptr(int32(60))}
+				if len(req.Results[0].Domains) != 1 || !proto.Equal(req.Results[0].Domains[0], wantRecord) {
+					t.Fatalf("DNS address snapshot = %v; want %v", req.Results[0].Domains, wantRecord)
 				}
 				for i, r := range req.Results {
 					if !proto.Equal(r.Target, original.Targets[i]) {

@@ -2,11 +2,13 @@ package contract
 
 import "time"
 
-// DNSRecord is a domain observation. TTL is measured in seconds; nil means
-// unknown, while a pointer to zero records an explicit zero TTL.
+// DNSRecord is a domain observation. A contains IPv4 addresses; AAAA contains
+// IPv6 addresses. TTL is measured in seconds; nil means unknown, while a pointer
+// to zero records an explicit zero TTL.
 type DNSRecord struct {
 	Domain string
-	IPs    []string
+	A      []string
+	AAAA   []string
 	TXT    []string
 	MX     []string
 	SOA    []string

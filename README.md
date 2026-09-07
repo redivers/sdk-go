@@ -25,6 +25,7 @@ import (
     "fmt"
     "log"
     "net"
+    "net/netip"
     "os"
     "os/signal"
 
@@ -47,9 +48,21 @@ func scan(ctx context.Context, targets []rediver.Target, emitter rediver.Emitter
             }
             return fmt.Errorf("resolve %s: %w", target.Domain, err)
         }
+        record := rediver.DNSRecord{Domain: target.Domain}
+        for _, address := range ips {
+            ip, err := netip.ParseAddr(address)
+            if err != nil {
+                return fmt.Errorf("parse address for %s: %w", target.Domain, err)
+            }
+            if ip.Is4() {
+                record.A = append(record.A, address)
+            } else {
+                record.AAAA = append(record.AAAA, address)
+            }
+        }
         if err := emitter.EmitDomains(rediver.DNSResult{
             Target: target,
-            Items:  []rediver.DNSRecord{{Domain: target.Domain, IPs: ips}},
+            Items:  []rediver.DNSRecord{record},
         }); err != nil {
             return err
         }
@@ -185,6 +198,11 @@ explicit presence use pointers, such as `DNSRecord.TTL`, `Finding.CVSSScore`,
 and `Certificate.Wildcard`; `rediver.Ptr(value)` is available. Certificate dates
 use `time.Time`. Findings require a name and a supported severity from
 `SeverityInfo` through `SeverityCritical`.
+
+`DNSRecord.A` holds IPv4 addresses and `DNSRecord.AAAA` holds IPv6 addresses.
+These replace the combined `DNSRecord.IPs` field; callers migrating to this
+version must split their DNS addresses by family. Empty address families are
+omitted from uploads. `HTTPData.IPs` continues to hold HTTP observations.
 
 ## Run the agent
 
