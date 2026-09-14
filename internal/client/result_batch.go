@@ -17,13 +17,13 @@ type emissionGroup[T any] struct {
 // Preserve first-appearance order while combining wrappers for one target; the
 // wire protocol accepts each target only once within a request. Keep groups
 // with no observations or error because they are explicit successful outcomes.
+// Observations and an error message are independent: a scanner that gathered
+// results and then broke reports both, and the backend writes what it gathered
+// before failing the target for good.
 func groupEmissionResults[T any](a *Assignment, results []contract.Result[T]) ([]emissionGroup[T], error) {
 	for index, result := range results {
 		if _, err := a.resolveTarget(result.Target); err != nil {
 			return nil, fmt.Errorf("result %d: %w", index, err)
-		}
-		if result.ErrorMessage != nil && len(result.Items) > 0 {
-			return nil, fmt.Errorf("rediver: result %d cannot contain both ErrorMessage and Items", index)
 		}
 	}
 	var groups []emissionGroup[T]
@@ -38,21 +38,12 @@ func groupEmissionResults[T any](a *Assignment, results []contract.Result[T]) ([
 		}
 		group := &groups[position]
 		if result.ErrorMessage != nil {
+			// One target, one verdict: a second message would silently win or lose.
 			if group.errorMessage != nil {
 				return nil, fmt.Errorf("rediver: result %d repeats ErrorMessage for the same target", resultIndex)
 			}
-			if len(group.observations) > 0 {
-				return nil, fmt.Errorf("rediver: result %d conflicts with Items for the same target", resultIndex)
-			}
 			message := *result.ErrorMessage
 			group.errorMessage = &message
-			continue
-		}
-		if len(result.Items) == 0 {
-			continue
-		}
-		if group.errorMessage != nil {
-			return nil, fmt.Errorf("rediver: result %d conflicts with ErrorMessage for the same target", resultIndex)
 		}
 		group.observations = append(group.observations, result.Items...)
 	}

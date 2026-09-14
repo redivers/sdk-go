@@ -17,8 +17,7 @@ type Assignment struct {
 	preparationErr error
 }
 
-func (a *Assignment) ID() string    { return a.job.GetJobId() }
-func (a *Assignment) RunID() string { return a.job.GetRunId() }
+func (a *Assignment) ID() string { return a.job.GetJobId() }
 
 // PrepareTargets runs synchronously after Start and before scanner publication.
 // The result is stable on repeated calls; references are never regenerated.

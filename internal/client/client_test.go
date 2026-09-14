@@ -35,7 +35,7 @@ type clientTestServer struct {
 	heartbeat    func(context.Context, *pb.HeartbeatRequest) error
 	jobHeartbeat func(context.Context, *pb.JobHeartbeatRequest) error
 	completed    func(context.Context, *pb.JobCompletedRequest) (*pb.JobCompletedResponse, error)
-	failure      func(context.Context, *pb.JobFailureRequest) (*pb.JobFailureResponse, error)
+	failure      func(context.Context, *pb.JobCompletedRequest) (*pb.JobCompletedResponse, error)
 }
 
 func (s *clientTestServer) record(event string) {
@@ -100,7 +100,6 @@ func (s *clientTestServer) JobStart(ctx context.Context, req *connect.Request[pb
 		out, err := s.start(ctx, req.Msg)
 		return connect.NewResponse(out), err
 	}
-	s.identity(req.Msg.JobId, req.Msg.RunId)
 	return connect.NewResponse(&pb.JobStartResponse{Success: true}), nil
 }
 
@@ -109,8 +108,6 @@ func (s *clientTestServer) JobHeartbeat(ctx context.Context, req *connect.Reques
 	var err error
 	if s.jobHeartbeat != nil {
 		err = s.jobHeartbeat(ctx, req.Msg)
-	} else {
-		s.identity(req.Msg.JobId, req.Msg.RunId)
 	}
 	return connect.NewResponse(&pb.JobHeartbeatResponse{}), err
 }
@@ -120,7 +117,6 @@ func (s *clientTestServer) PushServices(ctx context.Context, req *connect.Reques
 	if s.onPush != nil {
 		s.onPush(req.Header(), req.Msg)
 	}
-	s.identity(req.Msg.JobId, req.Msg.RunId)
 	if s.push != nil {
 		out, err := s.push(ctx, req.Msg)
 		return connect.NewResponse(out), err
@@ -129,30 +125,29 @@ func (s *clientTestServer) PushServices(ctx context.Context, req *connect.Reques
 }
 
 func (s *clientTestServer) JobCompleted(ctx context.Context, req *connect.Request[pb.JobCompletedRequest]) (*connect.Response[pb.JobCompletedResponse], error) {
+	// One RPC, two outcomes: an error message means the run broke. The events
+	// and hooks stay split so a test can still say which close it expects.
+	if req.Msg.ErrorMessage != nil {
+		s.record("failure")
+		if strings.TrimSpace(req.Msg.GetErrorMessage()) == "" {
+			s.t.Error("failure carries a blank error message")
+		}
+		if s.failure != nil {
+			out, err := s.failure(ctx, req.Msg)
+			return connect.NewResponse(out), err
+		}
+		return connect.NewResponse(&pb.JobCompletedResponse{Success: true}), nil
+	}
 	s.record("completed")
 	if s.completed != nil {
 		out, err := s.completed(ctx, req.Msg)
 		return connect.NewResponse(out), err
 	}
-	s.identity(req.Msg.JobId, req.Msg.RunId)
 	return connect.NewResponse(&pb.JobCompletedResponse{Success: true}), nil
 }
 
-func (s *clientTestServer) JobFailure(ctx context.Context, req *connect.Request[pb.JobFailureRequest]) (*connect.Response[pb.JobFailureResponse], error) {
-	s.record("failure")
-	if s.failure != nil {
-		out, err := s.failure(ctx, req.Msg)
-		return connect.NewResponse(out), err
-	}
-	s.identity(req.Msg.JobId, req.Msg.RunId)
-	if req.Msg.ErrorMessage == "" {
-		s.t.Error("failure missing error message")
-	}
-	return connect.NewResponse(&pb.JobFailureResponse{Success: true}), nil
-}
-
 func clientTestJob() *pb.Job {
-	return &pb.Job{JobId: "job-original", RunId: "run-original", Scanner: pb.Scanner_SCANNER_SERVICE_DISCOVER,
+	return &pb.Job{JobId: "job-original", Scanner: pb.Scanner_SCANNER_SERVICE_DISCOVER,
 		Options: &pb.JobOptions{Value: &pb.JobOptions_ServiceDiscover{ServiceDiscover: &pb.ServiceDiscoverOption{Ports: "80,443", Rate: 10}}},
 		Targets: []*pb.JobTarget{{AssetScanId: ptr("asset-original"), Host: ptr("example.com")}}}
 }

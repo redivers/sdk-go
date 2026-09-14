@@ -7,8 +7,9 @@ package contract
 // On that method, zero arguments emit nothing. Every supplied result is the
 // complete final outcome for its original Target. Empty Items with no
 // ErrorMessage reports no observations and is still uploaded. A non-nil
-// ErrorMessage reports a final failure for that target and cannot accompany
-// Items. Return an error from Scan to report a transient whole-job failure.
+// ErrorMessage reports a final failure for that target; it may accompany Items,
+// and the observations are written before the target is failed. Return an error
+// from Scan to report a transient whole-job failure.
 //
 // Methods are safe for concurrent calls and snapshot observations before
 // returning. Each call with one or more results uploads immediately and waits
@@ -29,11 +30,14 @@ type Emitter interface {
 
 // Result reports the complete final outcome for one original input Target.
 // Empty Items with no ErrorMessage reports no observations and is still
-// uploaded. A result may contain Items or ErrorMessage, never both.
+// uploaded. Items and ErrorMessage are independent and may both be present.
 type Result[T any] struct {
 	Target Target
-	// ErrorMessage reports a final error for this target. It cannot accompany
-	// Items. Nil means absent; a pointer to "" is explicitly empty.
+	// ErrorMessage reports a final error for this target: the scanner ran it and
+	// concluded it is broken, so it is never retried. It may accompany Items —
+	// a scanner that gathered results and then broke should report both. Trouble
+	// with the run itself belongs in the error Scan returns, not here. Nil means
+	// absent; a pointer to "" is explicitly empty.
 	ErrorMessage *string
 	Items        []T
 }

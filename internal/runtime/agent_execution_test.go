@@ -208,11 +208,11 @@ func TestAgentExecutionFailuresAreReported(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &agentServer{job: agentTestJob(), failure: func(_ context.Context, req *pb.JobFailureRequest) (*pb.JobFailureResponse, error) {
-				if !strings.Contains(req.ErrorMessage, tc.wantError) {
-					t.Errorf("reported failure = %q, want %q", req.ErrorMessage, tc.wantError)
+			s := &agentServer{job: agentTestJob(), failure: func(_ context.Context, req *pb.JobCompletedRequest) (*pb.JobCompletedResponse, error) {
+				if !strings.Contains(req.GetErrorMessage(), tc.wantError) {
+					t.Errorf("reported failure = %q, want %q", req.GetErrorMessage(), tc.wantError)
 				}
-				return &pb.JobFailureResponse{Success: true}, nil
+				return &pb.JobCompletedResponse{Success: true}, nil
 			}}
 			if tc.rejectPush {
 				s.push = func(context.Context, *pb.PushServicesRequest) (*pb.PushServicesResponse, error) {
@@ -251,7 +251,7 @@ func TestAgentCompletionRejectedAndNeverRetried(t *testing.T) {
 }
 
 func TestAgentInvalidJobNeverStarts(t *testing.T) {
-	for _, mutate := range []func(*pb.Job){func(j *pb.Job) { j.RunId = "" }, func(j *pb.Job) { j.Scanner = pb.Scanner_SCANNER_SUBDOMAIN }, func(j *pb.Job) { j.Targets = nil }, func(j *pb.Job) {
+	for _, mutate := range []func(*pb.Job){func(j *pb.Job) { j.JobId = "" }, func(j *pb.Job) { j.Scanner = pb.Scanner_SCANNER_SUBDOMAIN }, func(j *pb.Job) { j.Targets = nil }, func(j *pb.Job) {
 		j.Options = &pb.JobOptions{Value: &pb.JobOptions_Subdomain{Subdomain: &pb.SubdomainOption{}}}
 	}} {
 		job := agentTestJob()
@@ -606,7 +606,7 @@ func TestScannerAcknowledgesConcurrentFindingsBeforeWholeBatchReturns(t *testing
 		if !ok {
 			t.Fatalf("push used an unassigned target: %v", result.Target)
 		}
-		assertScannerAPIIdentity(t, req.JobId, req.RunId, result.Target, original)
+		assertScannerAPIIdentity(t, req.JobId, result.Target, original)
 		if len(result.Findings) != 1 {
 			t.Errorf("one Emit call sent %d findings; want 1", len(result.Findings))
 		}
@@ -678,7 +678,7 @@ func TestScannerUploadsExplicitEmptyResultsForEveryBatchTarget(t *testing.T) {
 					t.Fatalf("empty DNS results = %v", req.Results)
 				}
 				for i, result := range req.Results {
-					assertScannerAPIIdentity(t, req.JobId, req.RunId, result.Target, server.job.Targets[i])
+					assertScannerAPIIdentity(t, req.JobId, result.Target, server.job.Targets[i])
 					if len(result.Domains) != 0 || result.ErrorMessage != nil {
 						t.Errorf("empty DNS result %d = %v", i, result)
 					}
@@ -689,7 +689,7 @@ func TestScannerUploadsExplicitEmptyResultsForEveryBatchTarget(t *testing.T) {
 					t.Fatalf("empty service results = %v", req.Results)
 				}
 				for i, result := range req.Results {
-					assertScannerAPIIdentity(t, req.JobId, req.RunId, result.Target, server.job.Targets[i])
+					assertScannerAPIIdentity(t, req.JobId, result.Target, server.job.Targets[i])
 					if len(result.Services) != 0 || result.ErrorMessage != nil {
 						t.Errorf("empty service result %d = %v", i, result)
 					}
@@ -700,7 +700,7 @@ func TestScannerUploadsExplicitEmptyResultsForEveryBatchTarget(t *testing.T) {
 					t.Fatalf("empty finding results = %v", req.Results)
 				}
 				for i, result := range req.Results {
-					assertScannerAPIIdentity(t, req.JobId, req.RunId, result.Target, server.job.Targets[i])
+					assertScannerAPIIdentity(t, req.JobId, result.Target, server.job.Targets[i])
 					if len(result.Findings) != 0 || result.ErrorMessage != nil {
 						t.Errorf("empty finding result %d = %v", i, result)
 					}
@@ -775,7 +775,7 @@ func TestScannerCancellationRetainsAcknowledgedResultsAndRejectsLateEmissions(t 
 		t.Fatalf("canceled scan changed acknowledged results: %v", server.services)
 	}
 	req := server.services[0]
-	assertScannerAPIIdentity(t, req.JobId, req.RunId, req.Results[0].Target, server.job.Targets[0])
+	assertScannerAPIIdentity(t, req.JobId, req.Results[0].Target, server.job.Targets[0])
 	if req.Results[0].Services[0].Port != 80 {
 		t.Errorf("acknowledged service changed: %v", req.Results[0].Services)
 	}
@@ -925,7 +925,7 @@ func TestScannerReceivesWholeBatchOnceAndPreservesAssignment(t *testing.T) {
 			t.Fatalf("push %d results = %v", i, req.Results)
 		}
 		result := req.Results[0]
-		assertScannerAPIIdentity(t, req.JobId, req.RunId, result.Target, original.Targets[i])
+		assertScannerAPIIdentity(t, req.JobId, result.Target, original.Targets[i])
 		if i < 2 {
 			if len(result.Services) != 1 || result.Services[0].Host != original.Targets[i].GetHost() {
 				t.Errorf("service attribution changed: %v", result.Services)
@@ -956,7 +956,7 @@ func TestScannerBatchErrorPreservesAcknowledgedResults(t *testing.T) {
 	if len(server.services) != 3 {
 		t.Errorf("failed batch lost acknowledged observations: %v", server.services)
 	}
-	if len(server.failures) != 1 || server.failures[0].JobId != server.job.JobId || server.failures[0].RunId != server.job.RunId || !strings.Contains(server.failures[0].ErrorMessage, failure.Error()) {
+	if len(server.failures) != 1 || server.failures[0].JobId != server.job.JobId || !strings.Contains(server.failures[0].GetErrorMessage(), failure.Error()) {
 		t.Errorf("failure callback = %v", server.failures)
 	}
 }
@@ -1129,7 +1129,7 @@ func assertScannerAPIPayload(t *testing.T, s *scannerAPIServer, empty bool) {
 			t.Fatalf("expected one DNS target push, got %v", s.domains)
 		}
 		req, result := s.domains[0], s.domains[0].Results[0]
-		assertScannerAPIIdentity(t, req.JobId, req.RunId, result.Target, s.job.Targets[0])
+		assertScannerAPIIdentity(t, req.JobId, result.Target, s.job.Targets[0])
 		if len(result.Domains) != 2 {
 			t.Fatalf("DNS results = %v", result.Domains)
 		}
@@ -1145,7 +1145,7 @@ func assertScannerAPIPayload(t *testing.T, s *scannerAPIServer, empty bool) {
 			t.Fatalf("expected one service target push, got %v", s.services)
 		}
 		req, result := s.services[0], s.services[0].Results[0]
-		assertScannerAPIIdentity(t, req.JobId, req.RunId, result.Target, s.job.Targets[0])
+		assertScannerAPIIdentity(t, req.JobId, result.Target, s.job.Targets[0])
 		if len(result.Services) != 1 || result.Services[0].Host != "example.com" || result.Services[0].Port != 443 {
 			t.Errorf("service mapping/host attribution = %v", result.Services)
 		}
@@ -1154,7 +1154,7 @@ func assertScannerAPIPayload(t *testing.T, s *scannerAPIServer, empty bool) {
 			t.Fatalf("expected one finding target push, got %v", s.findings)
 		}
 		req, result := s.findings[0], s.findings[0].Results[0]
-		assertScannerAPIIdentity(t, req.JobId, req.RunId, result.Target, s.job.Targets[0])
+		assertScannerAPIIdentity(t, req.JobId, result.Target, s.job.Targets[0])
 		if len(result.Findings) != 1 || result.Findings[0].Name != "Observed vulnerability" || result.Findings[0].Severity != pb.FindingSeverity_FINDING_SEVERITY_HIGH {
 			t.Errorf("finding mapping = %v", result.Findings)
 		}
@@ -1172,7 +1172,7 @@ type scannerAPIServer struct {
 	domains      []*pb.PushDomainsRequest
 	services     []*pb.PushServicesRequest
 	findings     []*pb.PushFindingsRequest
-	failures     []*pb.JobFailureRequest
+	failures     []*pb.JobCompletedRequest
 	serviceError func(*pb.PushServicesRequest) error
 }
 
@@ -1197,17 +1197,17 @@ func (s *scannerAPIServer) JobHeartbeat(context.Context, *connect.Request[pb.Job
 	return connect.NewResponse(&pb.JobHeartbeatResponse{}), nil
 }
 
-func (s *scannerAPIServer) JobCompleted(context.Context, *connect.Request[pb.JobCompletedRequest]) (*connect.Response[pb.JobCompletedResponse], error) {
+func (s *scannerAPIServer) JobCompleted(_ context.Context, req *connect.Request[pb.JobCompletedRequest]) (*connect.Response[pb.JobCompletedResponse], error) {
+	// The error message, not the RPC, is what says the run broke.
+	if req.Msg.ErrorMessage != nil {
+		s.failed.Add(1)
+		s.mu.Lock()
+		s.failures = append(s.failures, proto.Clone(req.Msg).(*pb.JobCompletedRequest))
+		s.mu.Unlock()
+		return connect.NewResponse(&pb.JobCompletedResponse{Success: true}), nil
+	}
 	s.completed.Add(1)
 	return connect.NewResponse(&pb.JobCompletedResponse{Success: true}), nil
-}
-
-func (s *scannerAPIServer) JobFailure(_ context.Context, req *connect.Request[pb.JobFailureRequest]) (*connect.Response[pb.JobFailureResponse], error) {
-	s.failed.Add(1)
-	s.mu.Lock()
-	s.failures = append(s.failures, proto.Clone(req.Msg).(*pb.JobFailureRequest))
-	s.mu.Unlock()
-	return connect.NewResponse(&pb.JobFailureResponse{Success: true}), nil
 }
 
 func (s *scannerAPIServer) PushDomains(_ context.Context, req *connect.Request[pb.PushDomainsRequest]) (*connect.Response[pb.PushDomainsResponse], error) {
@@ -1268,7 +1268,7 @@ func runScannerAPIOnce(t *testing.T, agent *Agent) error {
 
 func scannerAPIJob(kind pb.Scanner) *pb.Job {
 	target := &pb.JobTarget{AssetScanId: ptr("asset-original"), Url: ptr("")}
-	job := &pb.Job{JobId: "job-original", RunId: "run-original", Scanner: kind, Targets: []*pb.JobTarget{target}}
+	job := &pb.Job{JobId: "job-original", Scanner: kind, Targets: []*pb.JobTarget{target}}
 	switch kind {
 	case pb.Scanner_SCANNER_SUBDOMAIN:
 		target.Domain, target.Host = ptr("example.com"), ptr("")
@@ -1281,10 +1281,10 @@ func scannerAPIJob(kind pb.Scanner) *pb.Job {
 	return job
 }
 
-func assertScannerAPIIdentity(t *testing.T, jobID, runID string, target, original *pb.JobTarget) {
+func assertScannerAPIIdentity(t *testing.T, jobID string, target, original *pb.JobTarget) {
 	t.Helper()
-	if jobID != "job-original" || runID != "run-original" {
-		t.Errorf("result identity = %q/%q", jobID, runID)
+	if jobID != "job-original" {
+		t.Errorf("result identity = %q", jobID)
 	}
 	if !proto.Equal(target, original) {
 		t.Errorf("original target/presence changed: got %v; want %v", target, original)

@@ -19,7 +19,7 @@ func validationJob(kind pb.Scanner) *pb.Job {
 	case pb.Scanner_SCANNER_VULNERABILITY:
 		target.Host, target.Port = ptr("example.com"), ptr(int32(443))
 	}
-	return &pb.Job{JobId: "job-1", RunId: "run-1", Scanner: kind, Targets: []*pb.JobTarget{target}}
+	return &pb.Job{JobId: "job-1", Scanner: kind, Targets: []*pb.JobTarget{target}}
 }
 
 func TestValidateJobRejectsMalformedJobs(t *testing.T) {
@@ -29,8 +29,6 @@ func TestValidateJobRejectsMalformedJobs(t *testing.T) {
 	}{
 		{"missing job ID", func(j *pb.Job) { j.JobId = "" }},
 		{"blank job ID", func(j *pb.Job) { j.JobId = " \t" }},
-		{"missing run ID", func(j *pb.Job) { j.RunId = "" }},
-		{"blank run ID", func(j *pb.Job) { j.RunId = "\n" }},
 		{"unspecified scanner", func(j *pb.Job) { j.Scanner = 0 }},
 		{"unknown scanner", func(j *pb.Job) { j.Scanner = 99 }},
 		{"scanner target fields mismatch", func(j *pb.Job) { j.Scanner = pb.Scanner_SCANNER_SERVICE_DISCOVER }},
@@ -142,7 +140,7 @@ func TestValidateJobOptionsPresence(t *testing.T) {
 
 func TestValidateJobPreservesOptionalPresence(t *testing.T) {
 	job := validationJob(pb.Scanner_SCANNER_VULNERABILITY)
-	job.JobId, job.RunId = " job-1 ", " run-1 "
+	job.JobId = " job-1 "
 	job.Targets[0].Url = ptr("")
 	job.Targets[0].Domain = ptr("")
 	job.Targets = append(job.Targets, &pb.JobTarget{AssetScanId: ptr("asset-2"), Host: ptr("example.com"), Port: ptr(int32(65535))})

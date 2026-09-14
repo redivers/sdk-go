@@ -1,11 +1,10 @@
 package runtime
 
 import (
+	"strings"
+
 	"github.com/redivers/sdk-go/internal/contract"
 
-	"buf.build/gen/go/rediver/api/connectrpc/go/networkscan/networkscanconnect"
-	pb "buf.build/gen/go/rediver/api/protocolbuffers/go/networkscan"
-	"connectrpc.com/connect"
 	"context"
 	"errors"
 	"net/http"
@@ -14,6 +13,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"buf.build/gen/go/rediver/api/connectrpc/go/networkscan/networkscanconnect"
+	pb "buf.build/gen/go/rediver/api/protocolbuffers/go/networkscan"
+	"connectrpc.com/connect"
 )
 
 func waitAgentSignal(t *testing.T, signal <-chan struct{}) {
@@ -42,14 +45,14 @@ func TestAgentCancellationAndStopUseLiveFailureContext(t *testing.T) {
 			started := make(chan struct{})
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			s := &agentServer{job: agentTestJob(), failure: func(ctx context.Context, req *pb.JobFailureRequest) (*pb.JobFailureResponse, error) {
+			s := &agentServer{job: agentTestJob(), failure: func(ctx context.Context, req *pb.JobCompletedRequest) (*pb.JobCompletedResponse, error) {
 				if ctx.Err() != nil {
 					t.Error("failure callback inherited canceled work context")
 				}
-				if req.JobId != "job-original" || req.RunId != "run-original" {
-					t.Error("failure lost run identity")
+				if req.JobId != "job-original" {
+					t.Error("failure lost job identity")
 				}
-				return &pb.JobFailureResponse{Success: true}, nil
+				return &pb.JobCompletedResponse{Success: true}, nil
 			}}
 			a := newAgentTest(t, s, func(ctx context.Context, targets []contract.Target, emit contract.Emitter) error {
 				if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}}); err != nil {
@@ -125,8 +128,8 @@ type agentServer struct {
 	heartbeat    func(context.Context, *pb.HeartbeatRequest) error
 	jobHeartbeat func(context.Context, *pb.JobHeartbeatRequest) error
 	completed    func(context.Context, *pb.JobCompletedRequest) (*pb.JobCompletedResponse, error)
-	failure      func(context.Context, *pb.JobFailureRequest) (*pb.JobFailureResponse, error)
-	validateID   func(string, string)
+	failure      func(context.Context, *pb.JobCompletedRequest) (*pb.JobCompletedResponse, error)
+	validateID   func(string)
 }
 
 func (s *agentServer) record(event string) {
@@ -147,14 +150,14 @@ func (s *agentServer) count(event string) int {
 	return n
 }
 
-func (s *agentServer) identity(jobID, runID string) {
+func (s *agentServer) identity(jobID string) {
 	s.t.Helper()
 	if s.validateID != nil {
-		s.validateID(jobID, runID)
+		s.validateID(jobID)
 		return
 	}
-	if jobID != "job-original" || runID != "run-original" {
-		s.t.Errorf("callback identity = %q/%q", jobID, runID)
+	if jobID != "job-original" {
+		s.t.Errorf("callback identity = %q", jobID)
 	}
 }
 
@@ -195,7 +198,7 @@ func (s *agentServer) JobStart(ctx context.Context, req *connect.Request[pb.JobS
 		out, err := s.start(ctx, req.Msg)
 		return connect.NewResponse(out), err
 	}
-	s.identity(req.Msg.JobId, req.Msg.RunId)
+	s.identity(req.Msg.JobId)
 	return connect.NewResponse(&pb.JobStartResponse{Success: true}), nil
 }
 
@@ -205,14 +208,14 @@ func (s *agentServer) JobHeartbeat(ctx context.Context, req *connect.Request[pb.
 	if s.jobHeartbeat != nil {
 		err = s.jobHeartbeat(ctx, req.Msg)
 	} else {
-		s.identity(req.Msg.JobId, req.Msg.RunId)
+		s.identity(req.Msg.JobId)
 	}
 	return connect.NewResponse(&pb.JobHeartbeatResponse{}), err
 }
 
 func (s *agentServer) PushServices(ctx context.Context, req *connect.Request[pb.PushServicesRequest]) (*connect.Response[pb.PushServicesResponse], error) {
 	s.record("push")
-	s.identity(req.Msg.JobId, req.Msg.RunId)
+	s.identity(req.Msg.JobId)
 	if s.push != nil {
 		out, err := s.push(ctx, req.Msg)
 		return connect.NewResponse(out), err
@@ -221,30 +224,31 @@ func (s *agentServer) PushServices(ctx context.Context, req *connect.Request[pb.
 }
 
 func (s *agentServer) JobCompleted(ctx context.Context, req *connect.Request[pb.JobCompletedRequest]) (*connect.Response[pb.JobCompletedResponse], error) {
+	// One RPC, two outcomes: an error message means the run broke. The events
+	// and hooks stay split so a test can still say which close it expects.
+	if req.Msg.ErrorMessage != nil {
+		s.record("failure")
+		if strings.TrimSpace(req.Msg.GetErrorMessage()) == "" {
+			s.t.Error("failure carries a blank error message")
+		}
+		if s.failure != nil {
+			out, err := s.failure(ctx, req.Msg)
+			return connect.NewResponse(out), err
+		}
+		s.identity(req.Msg.JobId)
+		return connect.NewResponse(&pb.JobCompletedResponse{Success: true}), nil
+	}
 	s.record("completed")
 	if s.completed != nil {
 		out, err := s.completed(ctx, req.Msg)
 		return connect.NewResponse(out), err
 	}
-	s.identity(req.Msg.JobId, req.Msg.RunId)
+	s.identity(req.Msg.JobId)
 	return connect.NewResponse(&pb.JobCompletedResponse{Success: true}), nil
 }
 
-func (s *agentServer) JobFailure(ctx context.Context, req *connect.Request[pb.JobFailureRequest]) (*connect.Response[pb.JobFailureResponse], error) {
-	s.record("failure")
-	if s.failure != nil {
-		out, err := s.failure(ctx, req.Msg)
-		return connect.NewResponse(out), err
-	}
-	s.identity(req.Msg.JobId, req.Msg.RunId)
-	if req.Msg.ErrorMessage == "" {
-		s.t.Error("failure missing error message")
-	}
-	return connect.NewResponse(&pb.JobFailureResponse{Success: true}), nil
-}
-
 func agentTestJob() *pb.Job {
-	return &pb.Job{JobId: "job-original", RunId: "run-original", Scanner: pb.Scanner_SCANNER_SERVICE_DISCOVER,
+	return &pb.Job{JobId: "job-original", Scanner: pb.Scanner_SCANNER_SERVICE_DISCOVER,
 		Options: &pb.JobOptions{Value: &pb.JobOptions_ServiceDiscover{ServiceDiscover: &pb.ServiceDiscoverOption{Ports: "80,443", Rate: 10}}},
 		Targets: []*pb.JobTarget{{AssetScanId: ptr("asset-original"), Host: ptr("example.com")}}}
 }

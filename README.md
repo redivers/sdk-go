@@ -151,9 +151,12 @@ Every supplied result is the complete, final outcome for its target:
 - Non-empty `Items` reports one or more observations.
 - Empty `Items` with a nil `ErrorMessage` reports a successful scan with no
   observations. The target-only result is still uploaded.
-- A non-nil `ErrorMessage` reports a final failure for that target. It cannot
-  accompany non-empty `Items`, including across multiple wrappers for the same
-  target in one call. `rediver.Ptr("")` is an explicitly present empty message.
+- A non-nil `ErrorMessage` reports a final failure for that target: the scanner
+  ran it and reached a verdict, so it is never retried. It may accompany
+  non-empty `Items` — a scanner that gathered results and then broke should
+  report both, and the backend writes the observations before failing the
+  target. Only a second `ErrorMessage` for the same target in one call is an
+  error. `rediver.Ptr("")` is an explicitly present empty message.
 - An error returned from `Scan` reports transient whole-job trouble, such as a
   crashed external engine.
 

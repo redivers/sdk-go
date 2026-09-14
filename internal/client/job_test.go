@@ -20,7 +20,7 @@ func TestPollReturnsPrivateValidatedAssignment(t *testing.T) {
 			case "empty":
 				s.job = nil
 			case "malformed":
-				s.job.RunId = ""
+				s.job.JobId = ""
 			case "invalid ports":
 				s.job.Options.GetServiceDiscover().Ports = "80-"
 			}
@@ -36,7 +36,7 @@ func TestPollReturnsPrivateValidatedAssignment(t *testing.T) {
 					t.Fatalf("malformed poll=%v,%v", a, err)
 				}
 			default:
-				if err != nil || a == nil || a.ID() != s.job.JobId || a.RunID() != s.job.RunId {
+				if err != nil || a == nil || a.ID() != s.job.JobId {
 					t.Fatalf("polled identity=%v,%v", a, err)
 				}
 				if len(a.Targets()) != 0 {
@@ -67,7 +67,9 @@ func TestRPCsPreserveRetryEligibility(t *testing.T) {
 				completed: func(context.Context, *pb.JobCompletedRequest) (*pb.JobCompletedResponse, error) {
 					return nil, unavailable
 				},
-				failure: func(context.Context, *pb.JobFailureRequest) (*pb.JobFailureResponse, error) { return nil, unavailable },
+				failure: func(context.Context, *pb.JobCompletedRequest) (*pb.JobCompletedResponse, error) {
+					return nil, unavailable
+				},
 			}
 			server := startClientServer(t, s)
 			policy := contract.RetryPolicy{MaxAttempts: 3}
@@ -110,8 +112,8 @@ func TestTerminalAcknowledgementRejectionsAreErrors(t *testing.T) {
 		completed: func(context.Context, *pb.JobCompletedRequest) (*pb.JobCompletedResponse, error) {
 			return &pb.JobCompletedResponse{Message: ptr("no complete")}, nil
 		},
-		failure: func(context.Context, *pb.JobFailureRequest) (*pb.JobFailureResponse, error) {
-			return &pb.JobFailureResponse{Message: ptr("no failure")}, nil
+		failure: func(context.Context, *pb.JobCompletedRequest) (*pb.JobCompletedResponse, error) {
+			return &pb.JobCompletedResponse{Message: ptr("no failure")}, nil
 		},
 	}
 	c := newTestClient(t, s)

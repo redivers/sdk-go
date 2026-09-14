@@ -28,7 +28,7 @@ func (c *Client) PushDomains(ctx context.Context, a *Assignment, results ...cont
 		}
 		wire = append(wire, &pb.DomainResult{Target: group.target, Domains: records, ErrorMessage: group.errorMessage})
 	}
-	request := &pb.PushDomainsRequest{JobId: a.job.JobId, RunId: a.job.RunId, Results: wire}
+	request := &pb.PushDomainsRequest{JobId: a.job.JobId, Results: wire}
 	client := c.rpc
 	return c.upload(ctx, func(ctx context.Context) (bool, error) {
 		response, err := client.PushDomains(ctx, connect.NewRequest(request))
@@ -52,7 +52,7 @@ func (c *Client) PushServices(ctx context.Context, a *Assignment, results ...con
 		}
 		wire = append(wire, &pb.ServiceResult{Target: group.target, Services: services, ErrorMessage: group.errorMessage})
 	}
-	request := &pb.PushServicesRequest{JobId: a.job.JobId, RunId: a.job.RunId, Results: wire}
+	request := &pb.PushServicesRequest{JobId: a.job.JobId, Results: wire}
 	client := c.rpc
 	return c.upload(ctx, func(ctx context.Context) (bool, error) {
 		response, err := client.PushServices(ctx, connect.NewRequest(request))
@@ -76,7 +76,7 @@ func (c *Client) PushFindings(ctx context.Context, a *Assignment, results ...con
 		}
 		wire = append(wire, &pb.FindingResult{Target: group.target, Findings: findings, ErrorMessage: group.errorMessage})
 	}
-	request := &pb.PushFindingsRequest{JobId: a.job.JobId, RunId: a.job.RunId, Results: wire}
+	request := &pb.PushFindingsRequest{JobId: a.job.JobId, Results: wire}
 	client := c.rpc
 	return c.upload(ctx, func(ctx context.Context) (bool, error) {
 		response, err := client.PushFindings(ctx, connect.NewRequest(request))

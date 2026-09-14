@@ -52,7 +52,10 @@ func TestGroupEmissionResultsKeepsEmptyWrappersInFirstAppearanceOrder(t *testing
 	}
 }
 
-func TestGroupEmissionResultsRejectsObservationErrorConflicts(t *testing.T) {
+// Observations and a verdict about the same target are independent facts, and a
+// scanner that gathered results before breaking reports both — in one wrapper or
+// across several. All of these combine into the single group the wire allows.
+func TestGroupEmissionResultsCombinesObservationsWithError(t *testing.T) {
 	a := preparedAssignment(t, assignmentJob(pb.Scanner_SCANNER_SERVICE_DISCOVER))
 	target := a.Targets()[0]
 	message := "probe failed"
@@ -80,20 +83,31 @@ func TestGroupEmissionResultsRejectsObservationErrorConflicts(t *testing.T) {
 				{Target: target, Items: []contract.Service{{Port: 443}}},
 			},
 		},
-		{
-			name: "multiple error wrappers",
-			results: []contract.ServiceResult{
-				{Target: target, ErrorMessage: &message},
-				{Target: target, ErrorMessage: ptr("")},
-			},
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			groups, err := groupEmissionResults(a, tc.results)
-			if err == nil {
-				t.Fatalf("conflicting results accepted: %v", groups)
+			if err != nil {
+				t.Fatalf("combined result rejected: %v", err)
+			}
+			if len(groups) != 1 || len(groups[0].observations) != 1 ||
+				groups[0].errorMessage == nil || *groups[0].errorMessage != message {
+				t.Fatalf("groups = %v; want one group carrying both", groups)
 			}
 		})
+	}
+}
+
+// A second message for one target is still a conflict: one would silently win.
+func TestGroupEmissionResultsRejectsRepeatedErrorForOneTarget(t *testing.T) {
+	a := preparedAssignment(t, assignmentJob(pb.Scanner_SCANNER_SERVICE_DISCOVER))
+	target := a.Targets()[0]
+	message := "probe failed"
+	groups, err := groupEmissionResults(a, []contract.ServiceResult{
+		{Target: target, ErrorMessage: &message},
+		{Target: target, ErrorMessage: ptr("")},
+	})
+	if err == nil {
+		t.Fatalf("repeated ErrorMessage accepted: %v", groups)
 	}
 }
 

@@ -220,10 +220,14 @@ func TestPushMapsErrorMessagePresenceForEveryResultType(t *testing.T) {
 	}
 }
 
-func TestPushRejectsItemsWithErrorBeforeUpload(t *testing.T) {
+// The case a scanner actually produces: it gathered some results and then its
+// tool died. Both facts are true, so both go on the wire — the backend writes
+// the observations and then fails the target for good.
+func TestPushSendsItemsBesideError(t *testing.T) {
 	for _, kind := range []pb.Scanner{pb.Scanner_SCANNER_SUBDOMAIN, pb.Scanner_SCANNER_SERVICE_DISCOVER, pb.Scanner_SCANNER_VULNERABILITY} {
 		t.Run(kind.String(), func(t *testing.T) {
-			s := &clientTestServer{}
+			requests := make(chan proto.Message, 1)
+			s := &clientTestServer{onPush: func(_ http.Header, msg proto.Message) { requests <- msg }}
 			c := newTestClient(t, s)
 			a := preparedAssignment(t, assignmentJob(kind))
 			target := a.Targets()[0]
@@ -237,10 +241,40 @@ func TestPushRejectsItemsWithErrorBeforeUpload(t *testing.T) {
 			default:
 				err = c.PushFindings(context.Background(), a, contract.FindingResult{Target: target, Items: []contract.Finding{{Name: "finding", Severity: contract.SeverityInfo}}, ErrorMessage: &message})
 			}
-			if err == nil || s.count("push") != 0 {
-				t.Fatalf("items with error accepted: %v uploads=%d", err, s.count("push"))
+			if err != nil || s.count("push") != 1 {
+				t.Fatalf("items with error rejected: %v uploads=%d", err, s.count("push"))
+			}
+
+			var gotError *string
+			var gotItems int
+			switch req := (<-requests).(type) {
+			case *pb.PushDomainsRequest:
+				gotError, gotItems = req.Results[0].ErrorMessage, len(req.Results[0].Domains)
+			case *pb.PushServicesRequest:
+				gotError, gotItems = req.Results[0].ErrorMessage, len(req.Results[0].Services)
+			case *pb.PushFindingsRequest:
+				gotError, gotItems = req.Results[0].ErrorMessage, len(req.Results[0].Findings)
+			}
+			if gotError == nil || *gotError != message || gotItems != 1 {
+				t.Fatalf("wire result error=%v items=%d; want both present", gotError, gotItems)
 			}
 		})
+	}
+}
+
+// Two verdicts for one target: one would silently win, so neither does.
+func TestPushRejectsRepeatedErrorForOneTarget(t *testing.T) {
+	s := &clientTestServer{}
+	c := newTestClient(t, s)
+	a := preparedAssignment(t, assignmentJob(pb.Scanner_SCANNER_SERVICE_DISCOVER))
+	target := a.Targets()[0]
+	first, second := "first", "second"
+	err := c.PushServices(context.Background(), a,
+		contract.ServiceResult{Target: target, ErrorMessage: &first},
+		contract.ServiceResult{Target: target, ErrorMessage: &second},
+	)
+	if err == nil || s.count("push") != 0 {
+		t.Fatalf("repeated ErrorMessage accepted: %v uploads=%d", err, s.count("push"))
 	}
 }
 

@@ -9,8 +9,9 @@ import "github.com/redivers/sdk-go/internal/contract"
 // On that method, zero arguments emit nothing. Every supplied result is the
 // complete final outcome for its original Target. Empty Items with no
 // ErrorMessage reports no observations and is still uploaded. A non-nil
-// ErrorMessage reports a final failure for that target and cannot accompany
-// Items. Return an error from Scan to report a transient whole-job failure.
+// ErrorMessage reports a final failure for that target; it may accompany Items,
+// and the observations are written before the target is failed. Return an error
+// from Scan to report a transient whole-job failure.
 //
 // Methods are safe for concurrent calls and snapshot observations before
 // returning. Each call with one or more results uploads immediately and waits
@@ -24,7 +25,7 @@ type Emitter = contract.Emitter
 
 // Result reports the complete final outcome for one original input Target.
 // Empty Items with no ErrorMessage reports no observations and is still
-// uploaded. A result may contain Items or ErrorMessage, never both.
+// uploaded. Items and ErrorMessage are independent and may both be present.
 type Result[T any] = contract.Result[T]
 
 // DNSResult reports the complete DNS outcome for one original input Target.

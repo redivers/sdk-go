@@ -26,7 +26,7 @@ func TestRunCancelsOtherJobsWhenTerminalAuthErrorFollowsScanError(t *testing.T) 
 				return nil, ctx.Err()
 			}
 			job := agentTestJob()
-			job.JobId, job.RunId = fmt.Sprintf("job-%d", index), fmt.Sprintf("run-%d", index)
+			job.JobId = fmt.Sprintf("job-%d", index)
 			job.Targets[0].Host = ptr(fmt.Sprintf("host-%d.example.com", index))
 			return job, nil
 		},
@@ -34,7 +34,7 @@ func TestRunCancelsOtherJobsWhenTerminalAuthErrorFollowsScanError(t *testing.T) 
 			return &pb.JobStartResponse{Success: true}, nil
 		},
 		jobHeartbeat: func(context.Context, *pb.JobHeartbeatRequest) error { return nil },
-		failure: func(context.Context, *pb.JobFailureRequest) (*pb.JobFailureResponse, error) {
+		failure: func(context.Context, *pb.JobCompletedRequest) (*pb.JobCompletedResponse, error) {
 			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("token revoked"))
 		},
 	}
@@ -147,13 +147,12 @@ func TestAgentRunBoundsConcurrencyAndDrainsParentCancellation(t *testing.T) {
 			}
 			job := agentTestJob()
 			job.JobId = fmt.Sprintf("job-%d", index)
-			job.RunId = fmt.Sprintf("run-%d", index)
 			job.Targets[0].AssetScanId = ptr(fmt.Sprintf("asset-%d", index))
 			return job, nil
 		},
-		validateID: func(jobID, runID string) {
-			if (jobID != "job-1" || runID != "run-1") && (jobID != "job-2" || runID != "run-2") {
-				t.Errorf("callback identity = %q/%q", jobID, runID)
+		validateID: func(jobID string) {
+			if jobID != "job-1" && jobID != "job-2" {
+				t.Errorf("callback identity = %q", jobID)
 			}
 		},
 		push: func(_ context.Context, req *pb.PushServicesRequest) (*pb.PushServicesResponse, error) {

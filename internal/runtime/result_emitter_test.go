@@ -382,7 +382,7 @@ func TestScannerUploadsErrorOnlyResultsAndCompletes(t *testing.T) {
 					t.Fatalf("domain results = %v", req.GetResults())
 				}
 				result := req.GetResults()[0]
-				assertScannerAPIIdentity(t, req.GetJobId(), req.GetRunId(), result.GetTarget(), server.job.GetTargets()[0])
+				assertScannerAPIIdentity(t, req.GetJobId(), result.GetTarget(), server.job.GetTargets()[0])
 				if !result.HasErrorMessage() || result.GetErrorMessage() != message || len(result.GetDomains()) != 0 {
 					t.Errorf("domain error result = %v", result)
 				}
@@ -392,7 +392,7 @@ func TestScannerUploadsErrorOnlyResultsAndCompletes(t *testing.T) {
 					t.Fatalf("service results = %v", req.GetResults())
 				}
 				result := req.GetResults()[0]
-				assertScannerAPIIdentity(t, req.GetJobId(), req.GetRunId(), result.GetTarget(), server.job.GetTargets()[0])
+				assertScannerAPIIdentity(t, req.GetJobId(), result.GetTarget(), server.job.GetTargets()[0])
 				if !result.HasErrorMessage() || result.GetErrorMessage() != message || len(result.GetServices()) != 0 {
 					t.Errorf("service error result = %v", result)
 				}
@@ -402,7 +402,7 @@ func TestScannerUploadsErrorOnlyResultsAndCompletes(t *testing.T) {
 					t.Fatalf("finding results = %v", req.GetResults())
 				}
 				result := req.GetResults()[0]
-				assertScannerAPIIdentity(t, req.GetJobId(), req.GetRunId(), result.GetTarget(), server.job.GetTargets()[0])
+				assertScannerAPIIdentity(t, req.GetJobId(), result.GetTarget(), server.job.GetTargets()[0])
 				if !result.HasErrorMessage() || result.GetErrorMessage() != message || len(result.GetFindings()) != 0 {
 					t.Errorf("finding error result = %v", result)
 				}
@@ -515,7 +515,7 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 					if len(req.Results) != 1 || len(req.Results[0].Domains) != 3 {
 						t.Fatalf("DNS result = %v; want its assigned-domain record and two observations", req)
 					}
-					assertScannerAPIIdentity(t, req.JobId, req.RunId, req.Results[0].Target, server.job.Targets[i])
+					assertScannerAPIIdentity(t, req.JobId, req.Results[0].Target, server.job.Targets[i])
 					for _, record := range req.Results[0].Domains {
 						domains = append(domains, record.Domain)
 					}
@@ -536,7 +536,7 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 					if len(req.Results) != 1 || len(req.Results[0].Services) != 2 {
 						t.Fatalf("service result = %v; want only its two observations", req)
 					}
-					assertScannerAPIIdentity(t, req.JobId, req.RunId, req.Results[0].Target, server.job.Targets[i])
+					assertScannerAPIIdentity(t, req.JobId, req.Results[0].Target, server.job.Targets[i])
 					for j, service := range req.Results[0].Services {
 						if want := []int32{80, 81, 82, 443}[i*2+j]; service.Port != want {
 							t.Errorf("service push %d result %d port = %d; want %d", i, j, service.Port, want)
@@ -562,7 +562,7 @@ func TestScannerSnapshotsWrappersAndNestedPayloadsBeforeCallerReusesValues(t *te
 					if len(req.Results) != 1 || len(req.Results[0].Findings) != 2 {
 						t.Fatalf("finding result = %v; want only its two observations", req)
 					}
-					assertScannerAPIIdentity(t, req.JobId, req.RunId, req.Results[0].Target, server.job.Targets[i])
+					assertScannerAPIIdentity(t, req.JobId, req.Results[0].Target, server.job.Targets[i])
 					for j, finding := range req.Results[0].Findings {
 						if want := []string{"observed", "second", "third", "fourth"}[i*2+j]; finding.Name != want {
 							t.Errorf("finding push %d result %d name = %q; want %q", i, j, finding.Name, want)
@@ -706,7 +706,7 @@ func TestScannerPreservesDNSResultMetadata(t *testing.T) {
 		if len(req.Results) != 1 || len(req.Results[0].Domains) != wantRecords {
 			t.Fatalf("call %d DNS records = %v; want %d", i, req.Results, wantRecords)
 		}
-		assertScannerAPIIdentity(t, req.JobId, req.RunId, req.Results[0].Target, server.job.Targets[i])
+		assertScannerAPIIdentity(t, req.JobId, req.Results[0].Target, server.job.Targets[i])
 	}
 	if server.domains[1].Results[0].Domains[0].GetTtl() != 300 || server.domains[2].Results[0].Domains[0].GetTtl() != 600 {
 		t.Fatal("assigned-domain records lost their metadata")
@@ -849,10 +849,10 @@ func TestScannerEmitsMultipleTargetsAndMergesRepeatedResultSets(t *testing.T) {
 					t.Fatal("expected exactly one upload per Emit call and one completed job")
 				}
 				got := make([][]string, 3)
-				targetIndex := func(jobID, runID string, target *pb.JobTarget) int {
+				targetIndex := func(jobID string, target *pb.JobTarget) int {
 					for i, original := range job.Targets {
 						if target.GetAssetScanId() == original.GetAssetScanId() {
-							assertScannerAPIIdentity(t, jobID, runID, target, original)
+							assertScannerAPIIdentity(t, jobID, target, original)
 							return i
 						}
 					}
@@ -871,7 +871,7 @@ func TestScannerEmitsMultipleTargetsAndMergesRepeatedResultSets(t *testing.T) {
 				for i, req := range server.domains {
 					assertResultCount(i, len(req.Results))
 					for _, result := range req.Results {
-						index := targetIndex(req.JobId, req.RunId, result.Target)
+						index := targetIndex(req.JobId, result.Target)
 						for _, record := range result.Domains {
 							got[index] = append(got[index], record.Domain)
 						}
@@ -880,7 +880,7 @@ func TestScannerEmitsMultipleTargetsAndMergesRepeatedResultSets(t *testing.T) {
 				for i, req := range server.services {
 					assertResultCount(i, len(req.Results))
 					for _, result := range req.Results {
-						index := targetIndex(req.JobId, req.RunId, result.Target)
+						index := targetIndex(req.JobId, result.Target)
 						for _, service := range result.Services {
 							got[index] = append(got[index], fmt.Sprint(service.Port))
 						}
@@ -889,7 +889,7 @@ func TestScannerEmitsMultipleTargetsAndMergesRepeatedResultSets(t *testing.T) {
 				for i, req := range server.findings {
 					assertResultCount(i, len(req.Results))
 					for _, result := range req.Results {
-						index := targetIndex(req.JobId, req.RunId, result.Target)
+						index := targetIndex(req.JobId, result.Target)
 						for _, finding := range result.Findings {
 							got[index] = append(got[index], finding.Name)
 						}
@@ -1011,7 +1011,7 @@ func (emitterPanicTransport) RoundTrip(*http.Request) (*http.Response, error) {
 }
 
 func emitterJob(kind pb.Scanner) *pb.Job {
-	job := &pb.Job{JobId: "emitter-job", RunId: "emitter-run", Scanner: kind,
+	job := &pb.Job{JobId: "emitter-job", Scanner: kind,
 		Targets: []*pb.JobTarget{{AssetScanId: ptr("first"), Domain: ptr("example.com"), Host: ptr("example.com"), Url: ptr("")}}}
 	if kind == pb.Scanner_SCANNER_SERVICE_DISCOVER {
 		job.Options = &pb.JobOptions{Value: &pb.JobOptions_ServiceDiscover{ServiceDiscover: &pb.ServiceDiscoverOption{Ports: "443,80-81,80", Rate: 20}}}

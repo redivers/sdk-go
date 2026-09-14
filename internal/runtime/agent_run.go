@@ -20,8 +20,8 @@ func (a *Agent) Run(ctx context.Context) error {
 
 func (a *Agent) run(s *agentSession) error {
 	type jobResult struct {
-		jobID, runID string
-		err          error
+		jobID string
+		err   error
 	}
 	results := make(chan jobResult, a.cfg.MaxConcurrency)
 	active := 0
@@ -29,7 +29,7 @@ func (a *Agent) run(s *agentSession) error {
 	consume := func(result jobResult) {
 		active--
 		if result.err != nil {
-			a.cfg.Logger.ErrorContext(s.work, "network scan job failed", "job_id", result.jobID, "run_id", result.runID, "error", result.err)
+			a.cfg.Logger.ErrorContext(s.work, "network scan job failed", "job_id", result.jobID, "error", result.err)
 			if client.IsAuthenticationError(result.err) {
 				resultErr = errors.Join(resultErr, result.err)
 				s.cancel(result.err)
@@ -89,7 +89,7 @@ func (a *Agent) run(s *agentSession) error {
 			active++
 			go func() {
 				err := a.execute(s, job)
-				results <- jobResult{jobID: job.ID(), runID: job.RunID(), err: err}
+				results <- jobResult{jobID: job.ID(), err: err}
 				if client.IsAuthenticationError(err) {
 					s.cancel(err)
 				}

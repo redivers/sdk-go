@@ -13,8 +13,8 @@ func validScannerKind(kind pb.Scanner) bool {
 }
 
 func validateJob(job *pb.Job) error {
-	if job == nil || strings.TrimSpace(job.GetJobId()) == "" || strings.TrimSpace(job.GetRunId()) == "" {
-		return fmt.Errorf("%w: job ID and run ID are required", contract.ErrInvalidJob)
+	if job == nil || strings.TrimSpace(job.GetJobId()) == "" {
+		return fmt.Errorf("%w: job ID is required", contract.ErrInvalidJob)
 	}
 	if !validScannerKind(job.Scanner) {
 		return fmt.Errorf("%w: unsupported job scanner %v", contract.ErrInvalidJob, job.Scanner)
