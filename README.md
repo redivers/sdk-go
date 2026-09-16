@@ -12,6 +12,22 @@ go get github.com/redivers/sdk-go
 Scanner projects use the root `github.com/redivers/sdk-go` package for the
 agent, inputs, results, and configuration.
 
+## Protocol compatibility
+
+This development snapshot uses the `rediver/api` generated modules from Buf
+commit `9b3bc2ee2c9a` (2026-09-16). The scanner-facing Go API is unchanged by
+this proto update. The protocol includes artifact reservation/completion RPCs;
+those additions do not change registration, job lifecycle, or result uploads.
+
+Network Scan jobs use `networkscan.ScannerService` and close through
+`JobCompleted`: an absent `error_message` means a clean run, while a present
+message retries unfinished targets. Each target's first accepted result is its
+final outcome, including an empty result. Keep the original `Target` value when
+emitting; its assignment identity cannot be serialized into another process.
+
+Local scanner builds may replace this module with a sibling SDK checkout. Keep
+that replacement and the Docker SDK build context pointed at the same checkout.
+
 ## Quick start
 
 This DNS scanner reports one final result for every assigned target:
