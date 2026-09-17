@@ -41,8 +41,10 @@ func (c *Client) JobHeartbeat(ctx context.Context, assignment *Assignment) error
 	})
 }
 
-// Complete closes the job as a clean run: every target the scanner never
-// reported is taken as finished, because the scanner had its chance at each.
+// Complete sends JobCompleted without error_message. The backend marks any
+// still-live targets completed, including targets with no uploaded result;
+// previously accepted terminal outcomes remain unchanged. Scanners should emit
+// an explicit final result for every target before returning nil.
 func (c *Client) Complete(ctx context.Context, assignment *Assignment) error {
 	return c.close(ctx, assignment, nil)
 }

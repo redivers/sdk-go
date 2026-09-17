@@ -1,3 +1,3 @@
 package rediver
 
-const sdkVersion = "2.0.0-dev"
+const sdkVersion = "1.0.1"
