@@ -12,6 +12,50 @@ go get github.com/redivers/sdk-go
 Scanner projects use the root `github.com/redivers/sdk-go` package for the
 agent, inputs, results, and configuration.
 
+## Release scope and migration
+
+`v1.0.1` uses the requested patch version, but contains a breaking
+Network Scan migration from `v1.0.0`. It is not a source-compatible patch for
+existing SDK consumers. Upgrade the backend and the `subdomain`, `service-probe`,
+`rediver-task-manager`, and `rediver-scanner` consumers together.
+
+- Replace `Scanner.Name/Params/AssetTypes`, `NewScanner`, and
+  `Scan(context.Context, Job, func(Result))` with
+  `Scan(context.Context, []Target, Emitter)`. A NetworkAgent token selects the
+  scanner kind; the transport is now `networkscan.ScannerService`.
+- Migrate the old result factories and models to `Result[T]`, `DNSResult`,
+  `ServiceResult`, `FindingResult`, and the typed emitter methods below. Return
+  emission errors, preserve original target values, and emit a complete final
+  outcome for each target, including empty outcomes.
+- The repository/CI/SAST job APIs, dispatch APIs, `Job`, `JobHandler`,
+  `PulledJob`, and `utils` package are removed. `RunOnce(ctx)` polls one job;
+  it no longer accepts a job ID and returns `ErrNoJobAvailable` on an empty poll.
+- Agent configuration is limited to the options listed below. Old retry/poll,
+  agent ID, version, and hostname controls and the exported `SdkVersion` are
+  removed. Error handling uses the four sentinels listed below; `APIError` and
+  the other legacy error types and sentinels are removed. The default shutdown
+  timeout is 30 seconds and configured timeouts must be positive.
+
+## Protocol compatibility
+
+This release uses the `rediver/api` generated modules from Buf commit
+`9b3bc2ee2c9a` (2026-09-16). These bindings also include artifact
+reservation/completion RPCs. The SDK requires a backend implementing this
+Network Scan contract; it does not support the legacy `scanner.v1` transport.
+
+Network Scan jobs use `networkscan.ScannerService` and close through
+`JobCompleted`: an absent `error_message` means a clean run and the backend
+marks any still-live targets completed, even if they have no uploaded result.
+A present, non-blank message reports a broken run and returns unfinished work
+to the pool until its attempt budget is exhausted. Previously accepted terminal
+outcomes remain unchanged in either case. Each target's first accepted result
+is its final outcome, including an empty result. Keep the original `Target`
+value when emitting; its assignment identity cannot be serialized into another
+process.
+
+Local scanner builds may replace this module with a sibling SDK checkout. Keep
+that replacement and the Docker SDK build context pointed at the same checkout.
+
 ## Quick start
 
 This DNS scanner reports one final result for every assigned target:
@@ -191,8 +235,8 @@ fails, only unfinished targets can be assigned again; accepted outcomes remain.
 | `Emit*()` or an empty outer result slice | No-op; no RPC is sent. |
 | `Emit*(Result{Target: target})` | Upload a final result with no observations or target error. |
 | `Emit*` returns `nil` | The backend acknowledged the push. |
-| `Scan` returns `nil` | Request completion after every assigned target emitted its final result. |
-| An assigned target has no result | Completion is rejected while that target remains unfinished. |
+| `Scan` returns `nil` | Send clean completion after active emissions drain. The SDK does not check that every target emitted a result. |
+| An assigned target has no result | Clean completion marks it completed without observations; emit an explicit final result to record its outcome before closing the job. |
 | `Scan` errors, panics, or is canceled | Report job failure; already accepted target outcomes remain stored. |
 | An emission fails | Fail the job even if the scanner later returns `nil`. |
 
@@ -203,9 +247,11 @@ use `time.Time`. Findings require a name and a supported severity from
 `SeverityInfo` through `SeverityCritical`.
 
 `DNSRecord.A` holds IPv4 addresses and `DNSRecord.AAAA` holds IPv6 addresses.
-These replace the combined `DNSRecord.IPs` field; callers migrating to this
-version must split their DNS addresses by family. Empty address families are
-omitted from uploads. `HTTPData.IPs` continues to hold HTTP observations.
+These replace the combined `DNSRecord.IPs` field from intermediate Network Scan
+SDK snapshots; snapshot consumers must split their DNS addresses by family.
+The `v1.0.0` model was named `Domain` and already had `A`/`AAAA`. Empty address
+families are omitted from uploads. `HTTPData.IPs` continues to hold HTTP
+observations.
 
 ## Run the agent
 
