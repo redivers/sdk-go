@@ -30,10 +30,14 @@ func (c *Client) PushDomains(ctx context.Context, a *Assignment, results ...cont
 	}
 	request := &pb.PushDomainsRequest{JobId: a.job.JobId, Results: wire}
 	client := c.rpc
-	return c.upload(ctx, func(ctx context.Context) (bool, error) {
+	if err := c.upload(ctx, func(ctx context.Context) (bool, error) {
 		response, err := client.PushDomains(ctx, connect.NewRequest(request))
 		return response != nil && response.Msg.GetSuccess(), err
-	})
+	}); err != nil {
+		return err
+	}
+	a.acknowledgeCoverage(groupIndices(groups))
+	return nil
 }
 
 func (c *Client) PushServices(ctx context.Context, a *Assignment, results ...contract.ServiceResult) error {
@@ -54,10 +58,14 @@ func (c *Client) PushServices(ctx context.Context, a *Assignment, results ...con
 	}
 	request := &pb.PushServicesRequest{JobId: a.job.JobId, Results: wire}
 	client := c.rpc
-	return c.upload(ctx, func(ctx context.Context) (bool, error) {
+	if err := c.upload(ctx, func(ctx context.Context) (bool, error) {
 		response, err := client.PushServices(ctx, connect.NewRequest(request))
 		return response != nil && response.Msg.GetSuccess(), err
-	})
+	}); err != nil {
+		return err
+	}
+	a.acknowledgeCoverage(groupIndices(groups))
+	return nil
 }
 
 func (c *Client) PushFindings(ctx context.Context, a *Assignment, results ...contract.FindingResult) error {
@@ -78,10 +86,23 @@ func (c *Client) PushFindings(ctx context.Context, a *Assignment, results ...con
 	}
 	request := &pb.PushFindingsRequest{JobId: a.job.JobId, Results: wire}
 	client := c.rpc
-	return c.upload(ctx, func(ctx context.Context) (bool, error) {
+	if err := c.upload(ctx, func(ctx context.Context) (bool, error) {
 		response, err := client.PushFindings(ctx, connect.NewRequest(request))
 		return response != nil && response.Msg.GetSuccess(), err
-	})
+	}); err != nil {
+		return err
+	}
+	a.acknowledgeCoverage(groupIndices(groups))
+	return nil
+}
+
+// groupIndices returns the original target indices covered by an accepted push.
+func groupIndices[T any](groups []emissionGroup[T]) []int {
+	indices := make([]int, len(groups))
+	for i, group := range groups {
+		indices[i] = group.index
+	}
+	return indices
 }
 
 func (c *Client) upload(ctx context.Context, push func(context.Context) (bool, error)) error {

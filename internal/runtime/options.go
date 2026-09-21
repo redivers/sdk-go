@@ -27,6 +27,10 @@ type Config struct {
 	Version              string
 	Logger               *slog.Logger
 	RetryPolicy          contract.RetryPolicy
+	// StrictCoverage requires every assigned target to reach a terminal
+	// per-target outcome before a scan may complete cleanly; a scan that omits
+	// one fails the whole job instead. Off by default for existing consumers.
+	StrictCoverage bool
 }
 
 // DefaultConfig supplies native runtime defaults without making network calls.

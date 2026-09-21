@@ -17,6 +17,7 @@ func TestSDKSentinelErrorsRemainDistinctThroughWrapping(t *testing.T) {
 		{rediver.ErrInvalidJob, "rediver: invalid job"},
 		{rediver.ErrNoJobAvailable, "rediver: no job available"},
 		{rediver.ErrAlreadyRunning, "rediver: agent already running"},
+		{rediver.ErrIncompleteCoverage, "rediver: scan did not report every assigned target"},
 	}
 	for index, sentinel := range sentinels {
 		t.Run(sentinel.message, func(t *testing.T) {

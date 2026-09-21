@@ -6,11 +6,15 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"buf.build/gen/go/rediver/api/connectrpc/go/networkscan/networkscanconnect"
+	pb "buf.build/gen/go/rediver/api/protocolbuffers/go/networkscan"
+	"connectrpc.com/connect"
 	rediver "github.com/redivers/sdk-go"
 )
 
@@ -49,6 +53,65 @@ func TestAgentServerURLRejectsInvalidValues(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestWithStrictCoverageReachesRuntime proves the public option plumbs all the
+// way to the runtime's coverage check, using a real Connect handler over HTTP
+// rather than the roundTripFunc shortcut the other option tests use: coverage
+// evaluation only runs after a full Register/Poll/Start/Scan round trip.
+func TestWithStrictCoverageReachesRuntime(t *testing.T) {
+	job := &pb.Job{JobId: "job-original", Scanner: pb.Scanner_SCANNER_SERVICE_DISCOVER,
+		Options: &pb.JobOptions{Value: &pb.JobOptions_ServiceDiscover{ServiceDiscover: &pb.ServiceDiscoverOption{Ports: "443", Rate: 10}}},
+		Targets: []*pb.JobTarget{{AssetScanId: rediver.Ptr("asset-original"), Host: rediver.Ptr("example.com")}}}
+	var failureMessage atomic.Pointer[string]
+	server := &strictCoverageServer{job: job, onFailure: func(message string) { failureMessage.Store(&message) }}
+	_, handler := networkscanconnect.NewScannerServiceHandler(server)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	agent, err := rediver.NewAgent("token", rediver.ScanFunc(func(context.Context, []rediver.Target, rediver.Emitter) error {
+		// Never emit for the assigned target: strict coverage must fail the job.
+		return nil
+	}), rediver.WithServerURL(httpServer.URL), rediver.WithHTTPClient(httpServer.Client()), rediver.WithStrictCoverage())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.RunOnce(context.Background()); !errors.Is(err, rediver.ErrIncompleteCoverage) {
+		t.Fatalf("RunOnce error = %v, want ErrIncompleteCoverage", err)
+	}
+	got := failureMessage.Load()
+	if got == nil || !strings.Contains(*got, "asset-original") {
+		t.Fatalf("job was not failed with the missing target's asset scan ID: %v", got)
+	}
+}
+
+type strictCoverageServer struct {
+	networkscanconnect.UnimplementedScannerServiceHandler
+	job       *pb.Job
+	onFailure func(string)
+}
+
+func (s *strictCoverageServer) Register(context.Context, *connect.Request[pb.RegisterRequest]) (*connect.Response[pb.RegisterResponse], error) {
+	return connect.NewResponse(&pb.RegisterResponse{RunnerId: "runner"}), nil
+}
+
+func (s *strictCoverageServer) Heartbeat(context.Context, *connect.Request[pb.HeartbeatRequest]) (*connect.Response[pb.HeartbeatResponse], error) {
+	return connect.NewResponse(&pb.HeartbeatResponse{}), nil
+}
+
+func (s *strictCoverageServer) JobPoll(context.Context, *connect.Request[pb.JobPollRequest]) (*connect.Response[pb.JobPollResponse], error) {
+	return connect.NewResponse(&pb.JobPollResponse{Job: s.job}), nil
+}
+
+func (s *strictCoverageServer) JobStart(context.Context, *connect.Request[pb.JobStartRequest]) (*connect.Response[pb.JobStartResponse], error) {
+	return connect.NewResponse(&pb.JobStartResponse{Success: true}), nil
+}
+
+func (s *strictCoverageServer) JobCompleted(_ context.Context, req *connect.Request[pb.JobCompletedRequest]) (*connect.Response[pb.JobCompletedResponse], error) {
+	if req.Msg.ErrorMessage != nil {
+		s.onFailure(req.Msg.GetErrorMessage())
+	}
+	return connect.NewResponse(&pb.JobCompletedResponse{Success: true}), nil
 }
 
 func TestAgentServerURLPrecedenceReachesHTTPClient(t *testing.T) {
