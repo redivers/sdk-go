@@ -17,4 +17,10 @@ var (
 	// ErrAlreadyRunning is returned when a lifecycle method is called on an Agent
 	// that has already started. Agents are one-shot; create a new Agent to restart.
 	ErrAlreadyRunning = contract.ErrAlreadyRunning
+
+	// ErrIncompleteCoverage indicates a scan returned without reaching a terminal
+	// per-target outcome for every assigned target while strict coverage
+	// (WithStrictCoverage) is enabled. The job is failed instead of completed so
+	// the backend retries the missing targets on a later job.
+	ErrIncompleteCoverage = contract.ErrIncompleteCoverage
 )

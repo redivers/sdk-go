@@ -3,6 +3,7 @@ package client
 import (
 	"fmt"
 	"slices"
+	"sync"
 
 	pb "buf.build/gen/go/rediver/api/protocolbuffers/go/networkscan"
 	"github.com/redivers/sdk-go/internal/contract"
@@ -15,6 +16,9 @@ type Assignment struct {
 	targets        []contract.Target
 	prepared       bool
 	preparationErr error
+
+	coverageMu sync.Mutex
+	covered    map[int]struct{}
 }
 
 func (a *Assignment) ID() string { return a.job.GetJobId() }
@@ -54,4 +58,40 @@ func (a *Assignment) resolveTarget(target contract.Target) (int, error) {
 		return index, nil
 	}
 	return 0, fmt.Errorf("rediver: emit requires an original target from this Scan invocation")
+}
+
+// acknowledgeCoverage records that the targets at the given original indices
+// reached a terminal per-target outcome (uploaded observations, an explicit
+// target error, or both). Duplicate indices are idempotent.
+func (a *Assignment) acknowledgeCoverage(indices []int) {
+	a.coverageMu.Lock()
+	defer a.coverageMu.Unlock()
+	if a.covered == nil {
+		a.covered = make(map[int]struct{}, len(a.targets))
+	}
+	for _, index := range indices {
+		a.covered[index] = struct{}{}
+	}
+}
+
+// FullyCovered reports whether every original target has reached a terminal
+// per-target outcome.
+func (a *Assignment) FullyCovered() bool {
+	a.coverageMu.Lock()
+	defer a.coverageMu.Unlock()
+	return len(a.covered) == len(a.targets)
+}
+
+// MissingTargets returns the asset scan IDs of targets that never reached a
+// terminal per-target outcome, in original assignment order.
+func (a *Assignment) MissingTargets() []string {
+	a.coverageMu.Lock()
+	defer a.coverageMu.Unlock()
+	missing := make([]string, 0, len(a.job.Targets)-len(a.covered))
+	for index, target := range a.job.Targets {
+		if _, ok := a.covered[index]; !ok {
+			missing = append(missing, target.GetAssetScanId())
+		}
+	}
+	return missing
 }

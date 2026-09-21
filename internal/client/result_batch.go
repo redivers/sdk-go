@@ -8,6 +8,7 @@ import (
 )
 
 type emissionGroup[T any] struct {
+	index        int
 	target       *pb.JobTarget
 	errorMessage *string
 	observations []T
@@ -34,7 +35,7 @@ func groupEmissionResults[T any](a *Assignment, results []contract.Result[T]) ([
 		if !exists {
 			position = len(groups)
 			positions[index] = position
-			groups = append(groups, emissionGroup[T]{target: a.job.Targets[index]})
+			groups = append(groups, emissionGroup[T]{index: index, target: a.job.Targets[index]})
 		}
 		group := &groups[position]
 		if result.ErrorMessage != nil {

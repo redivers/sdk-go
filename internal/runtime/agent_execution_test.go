@@ -325,6 +325,137 @@ func TestAgentEmptyServiceResultsArePushedBeforeCompletion(t *testing.T) {
 	}
 }
 
+func TestAgentStrictCoverageDefaultOffAllowsPartialCompletion(t *testing.T) {
+	// Unaffected default behavior for existing consumers: a scan that never
+	// reports one of its targets still completes cleanly.
+	job := agentTestJob()
+	job.Targets = append(job.Targets, &pb.JobTarget{AssetScanId: ptr("asset-second"), Host: ptr("second.example.com")})
+	s := &agentServer{job: job}
+	a := newAgentTest(t, s, func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
+		return emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
+	})
+	if err := a.RunOnce(context.Background()); err != nil {
+		t.Fatalf("default coverage: %v", err)
+	}
+	if s.count("completed") != 1 || s.count("failure") != 0 {
+		t.Errorf("completed/failure = %d/%d, want 1/0", s.count("completed"), s.count("failure"))
+	}
+}
+
+func TestAgentStrictCoverageCompletesWhenEveryTargetReported(t *testing.T) {
+	job := agentTestJob()
+	job.Targets = append(job.Targets, &pb.JobTarget{AssetScanId: ptr("asset-second"), Host: ptr("second.example.com")})
+	s := &agentServer{job: job}
+	a := newAgentTest(t, s, func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
+		return emit.EmitServices(
+			contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}},
+			contract.ServiceResult{Target: targets[1]},
+		)
+	}, func(cfg *Config) { cfg.StrictCoverage = true })
+	if err := a.RunOnce(context.Background()); err != nil {
+		t.Fatalf("full coverage: %v", err)
+	}
+	if s.count("completed") != 1 || s.count("failure") != 0 {
+		t.Errorf("completed/failure = %d/%d, want 1/0", s.count("completed"), s.count("failure"))
+	}
+}
+
+func TestAgentStrictCoverageFailsJobWhenTargetNeverReported(t *testing.T) {
+	job := agentTestJob()
+	job.Targets = append(job.Targets, &pb.JobTarget{AssetScanId: ptr("asset-second"), Host: ptr("second.example.com")})
+	s := &agentServer{job: job, failure: func(_ context.Context, req *pb.JobCompletedRequest) (*pb.JobCompletedResponse, error) {
+		if !strings.Contains(req.GetErrorMessage(), "asset-second") {
+			t.Errorf("failure message = %q, want the missing target's asset scan ID", req.GetErrorMessage())
+		}
+		return &pb.JobCompletedResponse{Success: true}, nil
+	}}
+	a := newAgentTest(t, s, func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
+		// Only the first of two assigned targets ever reaches a terminal outcome.
+		return emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}})
+	}, func(cfg *Config) { cfg.StrictCoverage = true })
+	err := a.RunOnce(context.Background())
+	if !errors.Is(err, contract.ErrIncompleteCoverage) {
+		t.Fatalf("incomplete coverage error = %v, want ErrIncompleteCoverage", err)
+	}
+	if s.count("push") != 1 || s.count("completed") != 0 || s.count("failure") != 1 {
+		t.Errorf("push/completed/failure = %d/%d/%d, want 1/0/1", s.count("push"), s.count("completed"), s.count("failure"))
+	}
+}
+
+// W2 regression: a large gap must not embed every missing asset scan ID into
+// JobCompletedRequest.error_message, which the backend can copy onto every
+// requeued target row.
+func TestAgentStrictCoverageCapsMissingTargetMessage(t *testing.T) {
+	job := agentTestJob()
+	const total = 8
+	for i := 1; i < total; i++ {
+		job.Targets = append(job.Targets, &pb.JobTarget{AssetScanId: ptr(fmt.Sprintf("asset-%d", i)), Host: ptr(fmt.Sprintf("host-%d.example.com", i))})
+	}
+	s := &agentServer{job: job, failure: func(_ context.Context, req *pb.JobCompletedRequest) (*pb.JobCompletedResponse, error) {
+		message := req.GetErrorMessage()
+		if !strings.Contains(message, fmt.Sprintf("%d target(s) unreported", total)) {
+			t.Errorf("failure message = %q, want a count of all %d missing targets", message, total)
+		}
+		if strings.Contains(message, "asset-7") {
+			t.Errorf("failure message = %q, want only the first 5 missing targets named", message)
+		}
+		if len(message) > 500 {
+			t.Errorf("failure message is %d bytes, want a capped preview", len(message))
+		}
+		return &pb.JobCompletedResponse{Success: true}, nil
+	}}
+	// None of the assigned targets ever reach a terminal outcome.
+	a := newAgentTest(t, s, func(context.Context, []contract.Target, contract.Emitter) error { return nil },
+		func(cfg *Config) { cfg.StrictCoverage = true })
+	err := a.RunOnce(context.Background())
+	if !errors.Is(err, contract.ErrIncompleteCoverage) {
+		t.Fatalf("incomplete coverage error = %v, want ErrIncompleteCoverage", err)
+	}
+	if s.count("completed") != 0 || s.count("failure") != 1 {
+		t.Errorf("completed/failure = %d/%d, want 0/1", s.count("completed"), s.count("failure"))
+	}
+}
+
+func TestAgentStrictCoverageDuplicateEmissionDoesNotCountAsCoverage(t *testing.T) {
+	job := agentTestJob()
+	job.Targets = append(job.Targets, &pb.JobTarget{AssetScanId: ptr("asset-second"), Host: ptr("second.example.com")})
+	s := &agentServer{job: job}
+	a := newAgentTest(t, s, func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
+		// Re-emitting the same target twice must not stand in for its sibling.
+		if err := emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 443}}}); err != nil {
+			return err
+		}
+		return emit.EmitServices(contract.ServiceResult{Target: targets[0], Items: []contract.Service{{Port: 8443}}})
+	}, func(cfg *Config) { cfg.StrictCoverage = true })
+	err := a.RunOnce(context.Background())
+	if !errors.Is(err, contract.ErrIncompleteCoverage) {
+		t.Fatalf("duplicate emission error = %v, want ErrIncompleteCoverage", err)
+	}
+	if s.count("completed") != 0 || s.count("failure") != 1 {
+		t.Errorf("completed/failure = %d/%d, want 0/1", s.count("completed"), s.count("failure"))
+	}
+}
+
+func TestAgentStrictCoverageTargetErrorCountsAsCoverageWithoutFailingBatch(t *testing.T) {
+	job := agentTestJob()
+	job.Targets = append(job.Targets, &pb.JobTarget{AssetScanId: ptr("asset-second"), Host: ptr("second.example.com")})
+	s := &agentServer{job: job}
+	a := newAgentTest(t, s, func(_ context.Context, targets []contract.Target, emit contract.Emitter) error {
+		// A target-level error (e.g. an upstream 429) is a valid final outcome
+		// for that target alone and must not fail the rest of the batch.
+		return emit.EmitServices(
+			contract.ServiceResult{Target: targets[0], ErrorMessage: ptr("upstream rate limited (429)")},
+			contract.ServiceResult{Target: targets[1], Items: []contract.Service{{Port: 443}}},
+		)
+	}, func(cfg *Config) { cfg.StrictCoverage = true })
+	if err := a.RunOnce(context.Background()); err != nil {
+		t.Fatalf("target error coverage: %v", err)
+	}
+	if s.count("completed") != 1 || s.count("failure") != 0 {
+		t.Errorf("completed/failure = %d/%d, want 1/0", s.count("completed"), s.count("failure"))
+	}
+}
+
 func TestAgentMultipleTargetUploadsDoNotCompleteBeforeScanReturns(t *testing.T) {
 	accepted, release := make(chan struct{}), make(chan struct{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

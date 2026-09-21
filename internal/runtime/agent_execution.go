@@ -27,7 +27,13 @@ func (a *Agent) execute(s *agentSession, job *client.Assignment) error {
 	if err := a.client.Start(s.work, job); err != nil {
 		return a.startFailure(s, job, err)
 	}
+	// Correlates every job with its runner for both Run and RunOnce; RunOnce
+	// otherwise emits no SDK log line of its own on a clean success.
+	a.cfg.Logger.InfoContext(s.work, "network scan job started", "job_id", job.ID(), "runner_id", a.currentRunnerID())
 	scanErr := a.scan(s.work, job)
+	if scanErr == nil {
+		scanErr = a.coverageError(s.work, job)
+	}
 	terminalCtx, terminalCancel := a.terminalContext(s)
 	defer terminalCancel()
 	var terminalErr error
@@ -36,6 +42,11 @@ func (a *Agent) execute(s *agentSession, job *client.Assignment) error {
 	} else {
 		terminalErr = a.client.Fail(terminalCtx, job, scanErr)
 	}
+	outcome := "completed"
+	if scanErr != nil {
+		outcome = "failed"
+	}
+	a.cfg.Logger.InfoContext(s.work, "network scan job finished", "job_id", job.ID(), "runner_id", a.currentRunnerID(), "outcome", outcome)
 	if err := errors.Join(scanErr, terminalErr); err != nil {
 		return fmt.Errorf("job %s: execution failed: %w", job.ID(), err)
 	}
@@ -69,6 +80,32 @@ func (a *Agent) scan(ctx context.Context, job *client.Assignment) error {
 		scanErr = errors.Join(scanErr, context.Cause(ctx))
 	}
 	return scanErr
+}
+
+// coverageError reports ErrIncompleteCoverage when strict coverage is enabled
+// and the scan returned without a terminal outcome for every assigned target.
+// The full missing-target list goes only to the local log: the returned error
+// becomes JobCompletedRequest.error_message, which the backend can copy onto
+// every requeued target row, so an uncapped list of asset scan IDs would write
+// megabytes across a large job's rows.
+func (a *Agent) coverageError(ctx context.Context, job *client.Assignment) error {
+	if !a.cfg.StrictCoverage || job.FullyCovered() {
+		return nil
+	}
+	missing := job.MissingTargets()
+	a.cfg.Logger.ErrorContext(ctx, "network scan job missing target coverage", "job_id", job.ID(), "missing_targets", missing)
+	return fmt.Errorf("%w: %s", contract.ErrIncompleteCoverage, summarizeMissingTargets(missing))
+}
+
+// missingTargetsPreviewLimit bounds how many asset scan IDs the coverage error
+// message names directly; the rest are counted only.
+const missingTargetsPreviewLimit = 5
+
+func summarizeMissingTargets(missing []string) string {
+	if len(missing) <= missingTargetsPreviewLimit {
+		return fmt.Sprintf("%d target(s) unreported: %v", len(missing), missing)
+	}
+	return fmt.Sprintf("%d target(s) unreported; first %d: %v", len(missing), missingTargetsPreviewLimit, missing[:missingTargetsPreviewLimit])
 }
 
 func (a *Agent) startFailure(s *agentSession, job *client.Assignment, cause error) error {

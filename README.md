@@ -14,6 +14,11 @@ agent, inputs, results, and configuration.
 
 ## Release scope and migration
 
+`v1.1.0` is additive and source-compatible with `v1.0.1`. It adds the opt-in
+`WithStrictCoverage()` option and the `ErrIncompleteCoverage` error for finite
+(`RunOnce`) workers, and logs `job_id`/`runner_id` at the start and end of each
+job. Consumers that do not opt in behave as before.
+
 `v1.0.1` uses the requested patch version, but contains a breaking
 Network Scan migration from `v1.0.0`. It is not a source-compatible patch for
 existing SDK consumers. Upgrade the backend and the `subdomain`, `service-probe`,
@@ -264,6 +269,12 @@ malformed assignments stop it. On parent cancellation, `Run` stops polling and
 lets active jobs drain until the shutdown timeout. `Stop()` immediately cancels
 polling and active work.
 
+Both `Run` and `RunOnce` log a `job_id`/`runner_id` pair at job start and again
+at the terminal outcome (`outcome=completed`/`failed`) through the configured
+`WithLogger`; a `WithStrictCoverage` failure additionally logs the full list of
+unreported targets (the error returned to the backend only names the first
+few, see below).
+
 Registration, heartbeats, and result uploads retry transient network,
 resource-exhausted, unavailable, and backend deadline errors up to five total
 attempts. Delays use exponential backoff from one second with up to 25% jitter.
@@ -279,11 +290,12 @@ poll error.
 | `WithShutdownTimeout(d)` | Set the positive grace period for active jobs during shutdown. |
 | `WithRequestTimeout(d)` | Set the positive per-RPC timeout; allow headroom above backend long polling. |
 | `WithLogger(logger)` | Supply a non-nil `*slog.Logger`. |
+| `WithStrictCoverage()` | Require every assigned target to reach a terminal per-target outcome (uploaded observations, an explicit target error, or both) before a job may complete cleanly. A target the scanner never reports fails the whole job instead of completing it, so the backend retries the gap on a later job. Off by default; intended for finite one-shot scanners (`RunOnce`). |
 
 When job concurrency is greater than one, the scanner must support concurrent
 `Scan` calls. Each call receives its own target batch and service-probe budget.
-Use `errors.Is` with `ErrNoJobAvailable`, `ErrInvalidConfig`, `ErrInvalidJob`, or
-`ErrAlreadyRunning` for SDK control flow.
+Use `errors.Is` with `ErrNoJobAvailable`, `ErrInvalidConfig`, `ErrInvalidJob`,
+`ErrAlreadyRunning`, or `ErrIncompleteCoverage` for SDK control flow.
 
 ## Examples and development
 
