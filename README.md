@@ -14,6 +14,11 @@ agent, inputs, results, and configuration.
 
 ## Release scope and migration
 
+`v1.1.0` is additive and source-compatible with `v1.0.1`. It adds the opt-in
+`WithStrictCoverage()` option and the `ErrIncompleteCoverage` error for finite
+(`RunOnce`) workers, and logs `job_id`/`runner_id` at the start and end of each
+job. Consumers that do not opt in behave as before.
+
 `v1.0.1` uses the requested patch version, but contains a breaking
 Network Scan migration from `v1.0.0`. It is not a source-compatible patch for
 existing SDK consumers. Upgrade the backend and the `subdomain`, `service-probe`,
